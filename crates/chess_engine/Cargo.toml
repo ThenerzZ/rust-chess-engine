@@ -7,4 +7,6 @@ edition = "2021"
 chess_core = { path = "../chess_core" }
 thiserror = { workspace = true }
 log = { workspace = true }
-rayon = "1.8.0" 
+rayon = "1.8.0"
+rand = "0.8.5"
+once_cell = "1.18.0" 

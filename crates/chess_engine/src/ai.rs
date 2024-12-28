@@ -1,16 +1,25 @@
 use chess_core::{Board, Move};
-use crate::{search::search_best_move, evaluation::evaluate_position};
+use crate::{search::search_best_move, evaluation::evaluate_position, opening_book::OpeningBook};
 use rayon::prelude::*;
 use std::time::{Instant, Duration};
 
-const MAX_THINK_TIME_MS: u64 = 500; // Reduced maximum thinking time to 500ms
-const MIN_DEPTH: u8 = 2; // Minimum search depth
-const MAX_DEPTH: u8 = 4; // Maximum search depth to prevent too deep searches
+const MAX_THINK_TIME_MS: u64 = 1000; // 1 second max think time
+const MIN_DEPTH: u8 = 3;  // Minimum search depth
+const MAX_DEPTH: u8 = 5;  // Maximum search depth
+const EARLY_GAME_DEPTH: u8 = 4;
+const MIDDLE_GAME_DEPTH: u8 = 5;
+const END_GAME_DEPTH: u8 = 5;
+
+// Time allocation percentages for different game phases
+const EARLY_GAME_TIME_PERCENT: f32 = 0.7;  // Use 70% of max time in opening
+const MIDDLE_GAME_TIME_PERCENT: f32 = 1.0;  // Use full time in middle game
+const END_GAME_TIME_PERCENT: f32 = 0.8;  // Use 80% of max time in endgame
 
 #[derive(Clone)]
 pub struct ChessAI {
     search_depth: u8,
     use_parallel: bool,
+    opening_book: OpeningBook,
 }
 
 impl ChessAI {
@@ -18,14 +27,21 @@ impl ChessAI {
         Self { 
             search_depth: search_depth.clamp(MIN_DEPTH, MAX_DEPTH),
             use_parallel: true,
+            opening_book: OpeningBook::new(),
         }
     }
 
     pub fn get_best_move(&self, board: &Board) -> Option<Move> {
+        // First, try to get a move from the opening book
+        if let Some(book_move) = self.opening_book.get_book_move(board) {
+            return Some(book_move);
+        }
+
         let start_time = Instant::now();
-        let max_time = Duration::from_millis(MAX_THINK_TIME_MS);
+        let phase_depth = self.get_phase_depth(board);
+        let max_time = self.get_phase_time(board);
         
-        // Generate all possible moves
+        // Generate and pre-sort moves
         let moves = self.generate_moves(board);
         if moves.is_empty() {
             return None;
@@ -35,23 +51,72 @@ impl ChessAI {
         let mut move_scores = self.evaluate_moves(board, &moves);
         move_scores.sort_by_key(|&(_, score)| -score);
         
-        // If we're running out of time, return the best move from quick evaluation
-        if start_time.elapsed() > max_time / 2 {
-            return Some(move_scores[0].0);
-        }
-
-        // Iterative deepening with time management
         let mut best_move = move_scores[0].0;
         let mut current_depth = MIN_DEPTH;
 
-        while current_depth <= self.search_depth && start_time.elapsed() < max_time {
+        // Iterative deepening with time management
+        while current_depth <= phase_depth && start_time.elapsed() < max_time {
             if let Some(better_move) = search_best_move(board, current_depth) {
                 best_move = better_move;
             }
+            
+            // Break early if we're running out of time
+            if start_time.elapsed() > max_time * 3 / 4 {
+                break;
+            }
+            
             current_depth += 1;
         }
 
         Some(best_move)
+    }
+
+    fn get_phase_time(&self, board: &Board) -> Duration {
+        let base_time = Duration::from_millis(MAX_THINK_TIME_MS);
+        let time_multiplier = match self.get_game_phase(board) {
+            GamePhase::Early => EARLY_GAME_TIME_PERCENT,
+            GamePhase::Middle => MIDDLE_GAME_TIME_PERCENT,
+            GamePhase::End => END_GAME_TIME_PERCENT,
+        };
+        
+        Duration::from_millis((MAX_THINK_TIME_MS as f32 * time_multiplier) as u64)
+    }
+
+    fn get_phase_depth(&self, board: &Board) -> u8 {
+        match self.get_game_phase(board) {
+            GamePhase::Early => EARLY_GAME_DEPTH.min(self.search_depth),
+            GamePhase::Middle => MIDDLE_GAME_DEPTH.min(self.search_depth),
+            GamePhase::End => END_GAME_DEPTH.min(self.search_depth),
+        }
+    }
+
+    fn get_game_phase(&self, board: &Board) -> GamePhase {
+        let mut total_pieces = 0;
+        let mut total_value = 0;
+
+        for rank in 1..=8 {
+            for file in 1..=8 {
+                let pos = chess_core::Position { rank, file };
+                if let Some(piece) = board.get_piece(pos) {
+                    total_pieces += 1;
+                    total_value += match piece.piece_type {
+                        chess_core::piece::PieceType::Pawn => 1,
+                        chess_core::piece::PieceType::Knight | chess_core::piece::PieceType::Bishop => 3,
+                        chess_core::piece::PieceType::Rook => 5,
+                        chess_core::piece::PieceType::Queen => 9,
+                        chess_core::piece::PieceType::King => 0,
+                    };
+                }
+            }
+        }
+
+        if total_value >= 30 {
+            GamePhase::Early
+        } else if total_value >= 15 {
+            GamePhase::Middle
+        } else {
+            GamePhase::End
+        }
     }
 
     fn generate_moves(&self, board: &Board) -> Vec<Move> {
@@ -116,4 +181,11 @@ impl ChessAI {
                 .collect()
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum GamePhase {
+    Early,
+    Middle,
+    End,
 } 
