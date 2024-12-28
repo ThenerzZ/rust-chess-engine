@@ -459,6 +459,16 @@ fn update_ai(
             println!("Move successful on board");
             println!("Moving piece from {:?} to {:?}", ai_move.from, ai_move.to);
             
+            // Check if there's a piece to capture at the destination
+            let captured_entity = pieces.iter()
+                .find(|(_, p, _)| p.position == ai_move.to)
+                .map(|(e, _, _)| e);
+
+            // Remove captured piece if any
+            if let Some(entity) = captured_entity {
+                commands.entity(entity).despawn();
+            }
+            
             // Find and move the AI piece
             for (entity, mut piece, transform) in pieces.iter_mut() {
                 if piece.position == ai_move.from {
