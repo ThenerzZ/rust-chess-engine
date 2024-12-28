@@ -458,7 +458,7 @@ fn update_ai(
         let thread_pool = AsyncComputeTaskPool::get();
         
         game_state.ai_task = Some(thread_pool.spawn(async move {
-            ai.get_best_move(&board)
+            ai.get_move(&board)
         }));
     }
 
