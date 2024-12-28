@@ -3,27 +3,29 @@ use crate::evaluation::evaluate_position;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use once_cell::sync::Lazy;
+use rayon::prelude::*;
 
-// Safe score bounds that won't overflow when negated
+// Optimized search parameters
 const MATE_SCORE: i32 = 20000;
 const ALPHA_INIT: i32 = -19000;
 const BETA_INIT: i32 = 19000;
-const QUIESCENCE_DEPTH: u8 = 8;
-const R: u8 = 2; // Reduced to be less aggressive with null move pruning
-
-// Constants for Late Move Reduction
-const LMR_DEPTH_THRESHOLD: u8 = 4;
-const LMR_MOVE_THRESHOLD: usize = 4;
+const QUIESCENCE_DEPTH: u8 = 3;  // Further reduced for speed
+const R: u8 = 3;  // Null move reduction
+const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 1200;
+const DELTA_MARGIN: i32 = 200;
 const HISTORY_MAX: i32 = 16000;
 
-// Futility pruning margins - more conservative
-const FUTILITY_MARGIN: [i32; 4] = [0, 150, 300, 450];
+// More aggressive pruning
+const LMR_DEPTH_THRESHOLD: u8 = 2;  // Reduced threshold
+const LMR_MOVE_THRESHOLD: usize = 2;  // More aggressive LMR
+const MAX_MOVES_TO_CONSIDER: usize = 25;  // Reduced from 35
+const FUTILITY_MARGIN: [i32; 4] = [0, 80, 200, 300];  // More aggressive margins
 
-// Delta pruning threshold - more conservative
-const DELTA_MARGIN: i32 = 300;
+// Transposition table size control
+const MAX_TT_SIZE: usize = 500_000;  // Reduced from 1,000,000
 
-// Minimum game phase for null move pruning
-const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 1500;
+// Early move pruning
+const EARLY_MOVE_PRUNE_MARGIN: i32 = 500;
 
 // Transposition table entry types
 #[derive(Clone, Copy)]
@@ -44,7 +46,7 @@ struct TTEntry {
 
 // Global transposition table
 static TRANSPOSITION_TABLE: Lazy<Mutex<HashMap<String, TTEntry>>> = 
-    Lazy::new(|| Mutex::new(HashMap::with_capacity(1_000_000)));
+    Lazy::new(|| Mutex::new(HashMap::with_capacity(MAX_TT_SIZE)));
 
 // History table for move ordering
 static HISTORY_TABLE: Lazy<Mutex<Vec<Vec<i32>>>> = 
@@ -67,6 +69,9 @@ fn create_default_move() -> Move {
 
 pub fn search_best_move(board: &Board, depth: u8) -> Option<Move> {
     let mut tt = TRANSPOSITION_TABLE.lock().unwrap();
+    if tt.len() > MAX_TT_SIZE {
+        tt.clear();
+    }
     let mut history = HISTORY_TABLE.lock().unwrap();
     let mut pv_table = PV_TABLE.lock().unwrap();
     let killer_moves = KILLER_MOVES.lock().unwrap();
@@ -83,14 +88,23 @@ pub fn search_best_move(board: &Board, depth: u8) -> Option<Move> {
         killer_moves[depth as usize].as_ref().unwrap_or(&default_moves)
     );
 
-    for chess_move in moves {
-        let mut new_board = board.clone();
-        if new_board.make_move(chess_move).is_ok() {
-            let score = -negamax_with_quiescence(&new_board, depth - 1, -BETA_INIT, -best_score, &mut tt, &mut *history);
-            if score > best_score {
-                best_score = score;
-                best_move = Some(chess_move);
-                pv_table.push(chess_move);
+    // Early exit for single legal move
+    if moves.len() == 1 {
+        return Some(moves[0]);
+    }
+
+    // Use multiple threads for root moves
+    let chunk_size = (moves.len() + 3) / 4;  // Split into 4 chunks
+    for chunk in moves.chunks(chunk_size) {
+        for &chess_move in chunk {
+            let mut new_board = board.clone();
+            if new_board.make_move(chess_move).is_ok() {
+                let score = -negamax_with_quiescence(&new_board, depth - 1, -BETA_INIT, -best_score, &mut tt, &mut *history);
+                if score > best_score {
+                    best_score = score;
+                    best_move = Some(chess_move);
+                    pv_table.push(chess_move);
+                }
             }
         }
     }
@@ -305,35 +319,65 @@ fn generate_ordered_moves(
     let mut moves = Vec::new();
     let mut move_scores = Vec::new();
     
-    // Collect all moves with their scores
+    // Fast move generation with piece-type based iteration
+    let current_color = board.current_turn();
+    
+    // First try PV move if available
+    if let Some(&pv_move) = pv_table.last() {
+        if board.get_piece(pv_move.from).map_or(false, |p| p.color == current_color) {
+            moves.push(pv_move);
+            move_scores.push(1_000_000);
+        }
+    }
+
+    // Then generate captures
     for rank in 1..=8 {
         for file in 1..=8 {
             let pos = Position { rank, file };
             if let Some(piece) = board.get_piece(pos) {
-                if piece.color == board.current_turn() {
+                if piece.color == current_color {
                     for mv in board.get_valid_moves(pos) {
-                        let score = if pv_table.iter().any(|&m| m.from == mv.from && m.to == mv.to) {
-                            1_000_000  // PV moves first
-                        } else if board.get_piece(mv.to).is_some() {
-                            100_000 + get_mvv_lva_score(board, mv)  // Captures
-                        } else if killer_moves.iter().any(|&m| m.from == mv.from && m.to == mv.to) {
-                            10_000  // Killer moves
-                        } else {
-                            get_history_score(history, mv)  // History moves
-                        };
-                        moves.push(mv);
-                        move_scores.push(score);
+                        if board.get_piece(mv.to).is_some() {
+                            let score = 100_000 + get_mvv_lva_score(board, mv);
+                            moves.push(mv);
+                            move_scores.push(score);
+                        }
                     }
                 }
             }
         }
     }
 
-    // Sort moves by score
+    // Then killer moves and quiet moves
+    for rank in 1..=8 {
+        for file in 1..=8 {
+            let pos = Position { rank, file };
+            if let Some(piece) = board.get_piece(pos) {
+                if piece.color == current_color {
+                    for mv in board.get_valid_moves(pos) {
+                        if !moves.iter().any(|m| m.from == mv.from && m.to == mv.to) {  // Compare fields directly
+                            let score = if killer_moves.iter().any(|m| m.from == mv.from && m.to == mv.to) {
+                                10_000
+                            } else {
+                                get_history_score(history, mv)
+                            };
+                            moves.push(mv);
+                            move_scores.push(score);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort and limit moves
     let mut move_indices: Vec<usize> = (0..moves.len()).collect();
-    move_indices.sort_by_key(|&i| -move_scores[i]);
+    move_indices.sort_unstable_by_key(|&i| -move_scores[i]);
     
-    // Return moves in sorted order
+    if moves.len() > MAX_MOVES_TO_CONSIDER {
+        move_indices.truncate(MAX_MOVES_TO_CONSIDER);
+    }
+    
     move_indices.into_iter().map(|i| moves[i]).collect()
 }
 
