@@ -99,6 +99,9 @@ struct MenuButton;
 #[derive(Component)]
 struct LastMoveText;
 
+#[derive(Component)]
+struct EvaluationText;
+
 impl Plugin for ChessUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -125,6 +128,7 @@ impl Plugin for ChessUiPlugin {
             update_game_status,
             handle_new_game_button,
             update_last_move,
+            update_evaluation_text,
         ));
     }
 }
@@ -520,7 +524,7 @@ fn spawn_ui(commands: &mut Commands) {
             background_color: Color::rgb(0.2, 0.2, 0.2).into(),
             ..default()
         }).with_children(|parent| {
-            // Left section with game status
+            // Left section with game status and evaluation
             parent.spawn(NodeBundle {
                 style: Style {
                     flex_direction: FlexDirection::Row,
@@ -541,6 +545,23 @@ fn spawn_ui(commands: &mut Commands) {
                         },
                     ),
                     GameStatusText,
+                ));
+
+                // Evaluation text
+                parent.spawn((
+                    TextBundle::from_section(
+                        "Eval: 0.0",
+                        TextStyle {
+                            font_size: 24.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    )
+                    .with_style(Style {
+                        margin: UiRect::left(Val::Px(20.0)),
+                        ..default()
+                    }),
+                    EvaluationText,
                 ));
 
                 // AI thinking text
@@ -829,5 +850,36 @@ fn update_last_move(
             );
             text.sections[0].value = format!("Last move: {} → {}", from_square, to_square);
         }
+    }
+}
+
+fn update_evaluation_text(
+    game_state: Res<GameState>,
+    mut query: Query<&mut Text, With<EvaluationText>>,
+) {
+    if let Ok(mut text) = query.get_single_mut() {
+        let evaluation = chess_engine::evaluation::evaluate_position(&game_state.board);
+        
+        // Convert centipawns to pawns for readability
+        let eval_in_pawns = evaluation as f32 / 100.0;
+        
+        // Format the evaluation string
+        let eval_text = if eval_in_pawns > 0.0 {
+            format!("+{:.1}", eval_in_pawns)
+        } else {
+            format!("{:.1}", eval_in_pawns)
+        };
+
+        // Set color based on who's winning
+        let color = if evaluation > 0 {
+            Color::rgb(0.2, 0.8, 0.2) // Green for white advantage
+        } else if evaluation < 0 {
+            Color::rgb(0.8, 0.2, 0.2) // Red for black advantage
+        } else {
+            Color::WHITE // White for equal position
+        };
+
+        text.sections[0].value = format!("Eval: {}", eval_text);
+        text.sections[0].style.color = color;
     }
 }
