@@ -1,22 +1,18 @@
-use chess_core::{Board, Move, Position};
+use chess_core::{Board, Move};
 use crate::evaluation::evaluate_position;
 
-// Constants for the minimax algorithm
-const MAX_SCORE: i32 = 1_000_000;
-const MIN_SCORE: i32 = -1_000_000;
+const ALPHA_INIT: i32 = i32::MIN + 1;
+const BETA_INIT: i32 = i32::MAX;
 
-/// Searches for the best move in the current position
 pub fn search_best_move(board: &Board, depth: u8) -> Option<Move> {
-    let mut alpha = MIN_SCORE;
-    let beta = MAX_SCORE;
     let mut best_move = None;
-    let mut best_score = MIN_SCORE;
+    let mut best_score = ALPHA_INIT;
 
-    // Generate all legal moves
+    // Generate all possible moves
     let mut moves = Vec::new();
     for rank in 1..=8 {
         for file in 1..=8 {
-            let pos = Position { rank, file };
+            let pos = chess_core::Position { rank, file };
             if let Some(piece) = board.get_piece(pos) {
                 if piece.color == board.current_turn() {
                     moves.extend(board.get_valid_moves(pos));
@@ -26,28 +22,33 @@ pub fn search_best_move(board: &Board, depth: u8) -> Option<Move> {
     }
 
     // Sort moves to improve alpha-beta pruning efficiency
-    moves.sort_by_key(|m| {
+    moves.sort_by_cached_key(|m| {
         if board.get_piece(m.to).is_some() {
-            1  // Captures first
+            // Prioritize captures based on piece values
+            if let Some(captured) = board.get_piece(m.to) {
+                match captured.piece_type {
+                    chess_core::piece::PieceType::Queen => 0,
+                    chess_core::piece::PieceType::Rook => 1,
+                    chess_core::piece::PieceType::Bishop |
+                    chess_core::piece::PieceType::Knight => 2,
+                    chess_core::piece::PieceType::Pawn => 3,
+                    _ => 4,
+                }
+            } else {
+                5
+            }
         } else {
-            0  // Non-captures second
+            6 // Non-captures last
         }
     });
 
-    // Try each move and evaluate resulting position
     for chess_move in moves {
         let mut new_board = board.clone();
         if new_board.make_move(chess_move).is_ok() {
-            let score = -negamax(&new_board, depth - 1, -beta, -alpha);
-            
+            let score = -negamax(&new_board, depth - 1, -BETA_INIT, -best_score);
             if score > best_score {
                 best_score = score;
                 best_move = Some(chess_move);
-            }
-
-            alpha = alpha.max(score);
-            if alpha >= beta {
-                break;
             }
         }
     }
@@ -55,26 +56,18 @@ pub fn search_best_move(board: &Board, depth: u8) -> Option<Move> {
     best_move
 }
 
-/// Negamax implementation of minimax with alpha-beta pruning
 fn negamax(board: &Board, depth: u8, mut alpha: i32, beta: i32) -> i32 {
     if depth == 0 {
         return evaluate_position(board);
     }
 
-    if board.is_checkmate() {
-        return MIN_SCORE;
-    }
+    let mut best_score = ALPHA_INIT;
 
-    if board.is_stalemate() || board.has_insufficient_material() {
-        return 0;
-    }
-
-    let mut max_score = MIN_SCORE;
+    // Generate all possible moves
     let mut moves = Vec::new();
-
     for rank in 1..=8 {
         for file in 1..=8 {
-            let pos = Position { rank, file };
+            let pos = chess_core::Position { rank, file };
             if let Some(piece) = board.get_piece(pos) {
                 if piece.color == board.current_turn() {
                     moves.extend(board.get_valid_moves(pos));
@@ -83,11 +76,33 @@ fn negamax(board: &Board, depth: u8, mut alpha: i32, beta: i32) -> i32 {
         }
     }
 
-    moves.sort_by_key(|m| {
-        if board.get_piece(m.to).is_some() {
-            1
+    if moves.is_empty() {
+        // If no moves are available, it's either checkmate or stalemate
+        return if board.is_checkmate() {
+            ALPHA_INIT // Checkmate
         } else {
-            0
+            0 // Stalemate
+        };
+    }
+
+    // Sort moves to improve alpha-beta pruning efficiency
+    moves.sort_by_cached_key(|m| {
+        if board.get_piece(m.to).is_some() {
+            // Prioritize captures based on piece values
+            if let Some(captured) = board.get_piece(m.to) {
+                match captured.piece_type {
+                    chess_core::piece::PieceType::Queen => 0,
+                    chess_core::piece::PieceType::Rook => 1,
+                    chess_core::piece::PieceType::Bishop |
+                    chess_core::piece::PieceType::Knight => 2,
+                    chess_core::piece::PieceType::Pawn => 3,
+                    _ => 4,
+                }
+            } else {
+                5
+            }
+        } else {
+            6 // Non-captures last
         }
     });
 
@@ -95,13 +110,13 @@ fn negamax(board: &Board, depth: u8, mut alpha: i32, beta: i32) -> i32 {
         let mut new_board = board.clone();
         if new_board.make_move(chess_move).is_ok() {
             let score = -negamax(&new_board, depth - 1, -beta, -alpha);
-            max_score = max_score.max(score);
+            best_score = best_score.max(score);
             alpha = alpha.max(score);
             if alpha >= beta {
-                break;
+                break; // Beta cutoff
             }
         }
     }
 
-    max_score
+    best_score
 } 

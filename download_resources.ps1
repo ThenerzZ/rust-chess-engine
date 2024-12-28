@@ -1,37 +1,100 @@
 # Create resources directory
-New-Item -ItemType Directory -Force -Path "resources"
+New-Item -ItemType Directory -Force -Path "assets"
 
-# Define pieces and colors
-$pieces = @("king", "queen", "rook", "bishop", "knight", "pawn")
-$colors = @("white", "black")
+# Create valid move indicator
+$circle = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="40" fill="rgba(0,255,0,0.3)" stroke="none"/>
+</svg>
+"@
+$circle | Out-File "assets/valid_move.svg" -Encoding UTF8
 
-# Hash values for each piece
-$hashes = @{
-    "white_king"   = "4/42"
-    "white_queen"  = "1/15"
-    "white_rook"   = "7/72"
-    "white_bishop" = "b/b1"
-    "white_knight" = "7/70"
-    "white_pawn"   = "4/45"
-    "black_king"   = "f/f0"
-    "black_queen"  = "4/47"
-    "black_rook"   = "f/ff"
-    "black_bishop" = "9/98"
-    "black_knight" = "e/ef"
-    "black_pawn"   = "c/c7"
+# Convert SVG to PNG using ImageMagick
+& "C:\Program Files\ImageMagick-7.1.1-Q16-HDRI\magick.exe" convert "assets/valid_move.svg" "assets/valid_move.png"
+
+# Create piece SVGs and convert to PNGs
+$pieces = @{
+    "white_king" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♔</text>
+</svg>
+"@
+    "white_queen" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♕</text>
+</svg>
+"@
+    "white_rook" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♖</text>
+</svg>
+"@
+    "white_bishop" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♗</text>
+</svg>
+"@
+    "white_knight" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♘</text>
+</svg>
+"@
+    "white_pawn" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♙</text>
+</svg>
+"@
+    "black_king" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♔</text>
+</svg>
+"@
+    "black_queen" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♕</text>
+</svg>
+"@
+    "black_rook" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♖</text>
+</svg>
+"@
+    "black_bishop" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♗</text>
+</svg>
+"@
+    "black_knight" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♘</text>
+</svg>
+"@
+    "black_pawn" = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
+  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♙</text>
+</svg>
+"@
 }
 
-# Download each piece
-foreach ($color in $colors) {
-    foreach ($piece in $pieces) {
-        $key = "${color}_${piece}"
-        $hash = $hashes[$key]
-        $filename = "resources/${key}.png"
-        $url = "https://upload.wikimedia.org/wikipedia/commons/thumb/$hash/Chess_${piece}${color[0]}t45.svg/240px-Chess_${piece}${color[0]}t45.svg.png"
-        
-        Write-Host "Downloading $filename..."
-        Invoke-WebRequest -Uri $url -OutFile $filename
-    }
+# Save all pieces and convert to PNG
+foreach ($piece in $pieces.Keys) {
+    $pieces[$piece] | Out-File "assets/$piece.svg" -Encoding UTF8
+    & "C:\Program Files\ImageMagick-7.1.1-Q16-HDRI\magick.exe" convert "assets/$piece.svg" "assets/$piece.png"
+    Remove-Item "assets/$piece.svg"
+    Write-Host "Created $piece.png"
 }
 
-Write-Host "All pieces downloaded!" 
+Remove-Item "assets/valid_move.svg"
+Write-Host "All resources created!" 
