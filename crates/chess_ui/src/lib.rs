@@ -6,7 +6,7 @@ use bevy::{
 };
 use chess_core::{
     Board, Position, Move,
-    piece::PieceType as ChessPieceType,
+    piece::{PieceType as ChessPieceType, Color as ChessColor},
 };
 use chess_engine::ChessAI;
 
@@ -21,6 +21,14 @@ enum Turn {
     AI,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum GameEndState {
+    Checkmate(ChessColor),  // Color is the winner
+    Stalemate,
+    InsufficientMaterial,
+    Ongoing,
+}
+
 #[derive(Resource)]
 pub struct GameState {
     pub board: Board,
@@ -28,6 +36,8 @@ pub struct GameState {
     pub valid_moves: Vec<Move>,
     pub ai: ChessAI,
     pub ai_thinking: bool,
+    pub game_end_state: GameEndState,
+    pub pending_promotion: Option<PendingPromotion>,
 }
 
 impl Default for GameState {
@@ -38,6 +48,8 @@ impl Default for GameState {
             ai_thinking: false,
             selected_square: None,
             valid_moves: Vec::new(),
+            game_end_state: GameEndState::Ongoing,
+            pending_promotion: None,
         }
     }
 }
@@ -102,6 +114,76 @@ struct LastMoveText;
 #[derive(Component)]
 struct EvaluationText;
 
+// Add new component for game end overlay
+#[derive(Component)]
+struct GameEndOverlay;
+
+#[derive(Component)]
+struct PromotionDialog;
+
+#[derive(Component)]
+struct PromotionButton {
+    piece_type: ChessPieceType,
+}
+
+#[derive(Resource)]
+struct PendingPromotion {
+    from: Position,
+    to: Position,
+}
+
+// Add this struct to hold move information
+#[derive(Clone, Copy)]
+struct MoveInfo {
+    from: Position,
+    to: Position,
+    is_promotion: bool,
+}
+
+// Add this enum to represent the result of a move attempt
+enum MoveAttempt {
+    Invalid,
+    Promotion(Position, Position),
+    ValidMove(Move),
+}
+
+// Add this enum to represent the action to take after validation
+enum PlayerAction {
+    ShowPromotionDialog {
+        from: Position,
+        to: Position,
+    },
+    MakeMove {
+        chess_move: Move,
+        selected_entity: Entity,
+        captured_entity: Option<Entity>,
+    },
+    SelectPiece {
+        entity: Entity,
+        deselect_entity: Option<Entity>,
+    },
+    Deselect {
+        entity: Entity,
+    },
+}
+
+fn validate_player_move(board: &Board, piece: &Piece, target: Position) -> MoveAttempt {
+    let valid_moves = board.get_valid_moves(piece.position);
+    if let Some(valid_move) = valid_moves.iter().find(|m| m.to == target) {
+        let is_promotion = piece.piece_type == ChessPieceType::Pawn && 
+            ((piece.is_white && valid_move.to.rank == 8) ||
+             (!piece.is_white && valid_move.to.rank == 1));
+
+        if is_promotion {
+            MoveAttempt::Promotion(valid_move.from, valid_move.to)
+        } else {
+            MoveAttempt::ValidMove(*valid_move)
+        }
+    } else {
+        MoveAttempt::Invalid
+    }
+}
+
 impl Plugin for ChessUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -129,6 +211,9 @@ impl Plugin for ChessUiPlugin {
             handle_new_game_button,
             update_last_move,
             update_evaluation_text,
+            check_game_end,
+            update_game_end_overlay,
+            handle_promotion_selection,
         ));
     }
 }
@@ -338,84 +423,114 @@ fn handle_resize(
 
 fn handle_input(
     mut commands: Commands,
-    buttons: Res<Input<MouseButton>>,
     windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform)>,
     mut game_state: ResMut<GameState>,
-    mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
+    mut pieces: Query<(Entity, &mut Piece, &Transform)>,
     selected_pieces: Query<Entity, With<SelectedPiece>>,
-    mut turn_state: ResMut<NextState<Turn>>,
+    chess_assets: Res<ChessAssets>,
+    buttons: Res<Input<MouseButton>>,
     turn: Res<State<Turn>>,
+    mut turn_state: ResMut<NextState<Turn>>,
 ) {
-    // Only handle input during player's turn
+    // Only process during player's turn
     if *turn.get() != Turn::Player {
         return;
     }
 
-    if game_state.board.is_checkmate() || game_state.board.is_stalemate() {
-        return;
-    }
+    let window = windows.single();
+    
+    if let Some(cursor_pos) = window.cursor_position() {
+        if let Some(position) = get_board_position(Some(cursor_pos), window) {
+            if buttons.just_pressed(MouseButton::Left) {
+                // First, determine what action to take
+                let action = if let Some(selected_entity) = selected_pieces.iter().next() {
+                    if let Some((_, piece, _)) = pieces.iter().find(|(e, _, _)| *e == selected_entity) {
+                        let valid_moves = game_state.board.get_valid_moves(piece.position);
+                        if let Some(valid_move) = valid_moves.iter().find(|m| m.to == position) {
+                            let is_promotion = piece.piece_type == ChessPieceType::Pawn && 
+                                ((piece.is_white && valid_move.to.rank == 8) ||
+                                 (!piece.is_white && valid_move.to.rank == 1));
 
-    if buttons.just_pressed(MouseButton::Left) {
-        let window = windows.single();
-        if let Some(position) = get_board_position(window.cursor_position(), window) {
-            // If a piece is already selected
-            if let Ok(selected_entity) = selected_pieces.get_single() {
-                let selected_piece = pieces.iter().find(|(entity, piece, _)| {
-                    *entity == selected_entity
-                }).map(|(_, piece, _)| *piece);
-
-                if let Some(piece) = selected_piece {
-                    // Try to make a move
-                    let valid_moves = game_state.board.get_valid_moves(piece.position);
-                    if let Some(valid_move) = valid_moves.iter().find(|m| m.to == position) {
-                        // First check if there's a piece to capture at the destination
-                        let captured_entity = pieces.iter()
-                            .find(|(_, p, _)| p.position == valid_move.to)
-                            .map(|(e, _, _)| e);
-
-                        if game_state.board.make_move(*valid_move).is_ok() {
-                            // Remove captured piece if any
-                            if let Some(entity) = captured_entity {
-                                commands.entity(entity).despawn();
+                            if is_promotion {
+                                Some(PlayerAction::ShowPromotionDialog {
+                                    from: valid_move.from,
+                                    to: valid_move.to,
+                                })
+                            } else {
+                                let captured_entity = pieces.iter()
+                                    .find(|(_, p, _)| p.position == valid_move.to)
+                                    .map(|(e, _, _)| e);
+                                Some(PlayerAction::MakeMove {
+                                    chess_move: *valid_move,
+                                    selected_entity,
+                                    captured_entity,
+                                })
                             }
+                        } else if let Some((entity, _, _)) = pieces.iter().find(|(_, p, _)| {
+                            p.position == position && p.is_white
+                        }) {
+                            Some(PlayerAction::SelectPiece {
+                                entity,
+                                deselect_entity: Some(selected_entity),
+                            })
+                        } else {
+                            Some(PlayerAction::Deselect {
+                                entity: selected_entity,
+                            })
+                        }
+                    } else {
+                        Some(PlayerAction::Deselect {
+                            entity: selected_entity,
+                        })
+                    }
+                } else if let Some((entity, _, _)) = pieces.iter().find(|(_, p, _)| {
+                    p.position == position && p.is_white
+                }) {
+                    Some(PlayerAction::SelectPiece {
+                        entity,
+                        deselect_entity: None,
+                    })
+                } else {
+                    None
+                };
 
-                            // Move the piece
-                            if let Some((entity, mut piece, _transform)) = pieces.iter_mut().find(|(e, _, _)| *e == selected_entity) {
-                                move_piece(
-                                    &mut commands,
-                                    entity,
-                                    &mut piece,
-                                    valid_move.to,
-                                );
+                // Then execute the action
+                if let Some(action) = action {
+                    match action {
+                        PlayerAction::ShowPromotionDialog { from, to } => {
+                            game_state.pending_promotion = Some(PendingPromotion { from, to });
+                            spawn_promotion_dialog(&mut commands, &chess_assets, true);
+                        }
+                        PlayerAction::MakeMove { chess_move, selected_entity, captured_entity } => {
+                            if game_state.board.make_move(chess_move).is_ok() {
+                                if let Some(entity) = captured_entity {
+                                    commands.entity(entity).despawn();
+                                }
+
+                                if let Some((entity, mut piece, _transform)) = pieces.iter_mut().find(|(e, _, _)| *e == selected_entity) {
+                                    move_piece(
+                                        &mut commands,
+                                        entity,
+                                        &mut piece,
+                                        chess_move.to,
+                                    );
+                                }
+
+                                commands.entity(selected_entity).remove::<SelectedPiece>();
+                                turn_state.set(Turn::AI);
                             }
-
-                            // Deselect the piece
-                            commands.entity(selected_entity).remove::<SelectedPiece>();
-
-                            // Switch to AI's turn
-                            turn_state.set(Turn::AI);
-                            return;
+                        }
+                        PlayerAction::SelectPiece { entity, deselect_entity } => {
+                            if let Some(old_entity) = deselect_entity {
+                                commands.entity(old_entity).remove::<SelectedPiece>();
+                            }
+                            commands.entity(entity).insert(SelectedPiece);
+                        }
+                        PlayerAction::Deselect { entity } => {
+                            commands.entity(entity).remove::<SelectedPiece>();
                         }
                     }
-                }
-
-                // If clicked on another friendly piece, select it instead
-                if let Some((entity, _piece, _)) = pieces.iter().find(|(_, p, _)| {
-                    p.position == position && p.is_white
-                }) {
-                    commands.entity(selected_entity).remove::<SelectedPiece>();
-                    commands.entity(entity).insert(SelectedPiece);
-                    return;
-                }
-
-                // If clicked elsewhere, deselect the piece
-                commands.entity(selected_entity).remove::<SelectedPiece>();
-            } else {
-                // No piece selected - try to select a friendly piece
-                if let Some((entity, _piece, _)) = pieces.iter().find(|(_, p, _)| {
-                    p.position == position && p.is_white
-                }) {
-                    commands.entity(entity).insert(SelectedPiece);
                 }
             }
         }
@@ -440,6 +555,7 @@ fn update_ai(
     mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
     mut turn_state: ResMut<NextState<Turn>>,
     turn: Res<State<Turn>>,
+    chess_assets: Res<ChessAssets>,
 ) {
     // Only process during AI's turn
     if *turn.get() != Turn::AI {
@@ -460,8 +576,6 @@ fn update_ai(
         // Try to make the move
         if game_state.board.make_move(ai_move).is_ok() {
             println!("AI attempting move: {:?}", ai_move);
-            println!("Move successful on board");
-            println!("Moving piece from {:?} to {:?}", ai_move.from, ai_move.to);
             
             // Check if there's a piece to capture at the destination
             let captured_entity = pieces.iter()
@@ -473,25 +587,55 @@ fn update_ai(
                 commands.entity(entity).despawn();
             }
             
-            // Find and move the AI piece
-            for (entity, mut piece, transform) in pieces.iter_mut() {
-                if piece.position == ai_move.from {
-                    // Update piece position
-                    piece.position = ai_move.to;
-                    
-                    // Calculate target position in world coordinates
-                    let target_pos = board_position_to_world(ai_move.to, transform.translation.z);
-                    
-                    // Add movement component
-                    commands.entity(entity).insert(MovingPiece {
-                        target_position: target_pos,
-                        speed: 500.0,
-                    });
-                    break;
+            // Handle promotion
+            if let Some(promotion_type) = ai_move.promotion {
+                // Remove the old pawn
+                for (entity, piece, _) in pieces.iter() {
+                    if piece.position == ai_move.from {
+                        commands.entity(entity).despawn();
+                        break;
+                    }
+                }
+
+                // Spawn the promoted piece
+                let world_pos = board_position_to_world(ai_move.to, 2.0);
+                commands.spawn((
+                    SpriteBundle {
+                        texture: match promotion_type {
+                            ChessPieceType::Queen => chess_assets.black_queen.clone(),
+                            ChessPieceType::Rook => chess_assets.black_rook.clone(),
+                            ChessPieceType::Bishop => chess_assets.black_bishop.clone(),
+                            ChessPieceType::Knight => chess_assets.black_knight.clone(),
+                            _ => unreachable!(),
+                        },
+                        transform: Transform::from_translation(world_pos)
+                            .with_scale(Vec3::splat(1.0)),
+                        sprite: Sprite {
+                            custom_size: Some(Vec2::new(SQUARE_SIZE - 10.0, SQUARE_SIZE - 10.0)),
+                            ..default()
+                        },
+                        ..default()
+                    },
+                    Piece {
+                        piece_type: promotion_type,
+                        is_white: false,
+                        position: ai_move.to,
+                    },
+                ));
+            } else {
+                // Handle normal move
+                for (entity, mut piece, transform) in pieces.iter_mut() {
+                    if piece.position == ai_move.from {
+                        piece.position = ai_move.to;
+                        let target_pos = board_position_to_world(ai_move.to, transform.translation.z);
+                        commands.entity(entity).insert(MovingPiece {
+                            target_position: target_pos,
+                            speed: 500.0,
+                        });
+                        break;
+                    }
                 }
             }
-        } else {
-            println!("Invalid AI move attempted: {:?}", ai_move);
         }
     }
     
@@ -792,23 +936,26 @@ fn handle_new_game_button(
         (Changed<Interaction>, With<MenuButton>),
     >,
     mut game_state: ResMut<GameState>,
-    mut turn_state: ResMut<NextState<Turn>>,
-    pieces: Query<Entity, With<Piece>>,
     mut commands: Commands,
+    pieces: Query<Entity, With<Piece>>,
+    mut turn_state: ResMut<NextState<Turn>>,
     chess_assets: Res<ChessAssets>,
 ) {
-    for (interaction, mut color) in &mut interaction_query {
+    for (interaction, mut color) in interaction_query.iter_mut() {
         match *interaction {
             Interaction::Pressed => {
                 // Reset game state
                 game_state.board = Board::new();
+                game_state.selected_square = None;
+                game_state.valid_moves.clear();
                 game_state.ai_thinking = false;
-                
+                game_state.game_end_state = GameEndState::Ongoing;
+
                 // Remove all pieces
                 for entity in pieces.iter() {
                     commands.entity(entity).despawn();
                 }
-                
+
                 // Spawn new pieces
                 let board_size = 8.0;
                 let board_offset = Vec3::new(
@@ -817,12 +964,11 @@ fn handle_new_game_button(
                     0.0
                 );
                 spawn_initial_pieces(&mut commands, board_offset, &chess_assets);
-                
+
                 // Reset turn to player
                 turn_state.set(Turn::Player);
-                
-                // Update button color
-                *color = Color::rgb(0.3, 0.3, 0.3).into();
+
+                *color = Color::rgb(0.4, 0.4, 0.4).into();
             }
             Interaction::Hovered => {
                 *color = Color::rgb(0.5, 0.5, 0.5).into();
@@ -881,5 +1027,320 @@ fn update_evaluation_text(
 
         text.sections[0].value = format!("Eval: {}", eval_text);
         text.sections[0].style.color = color;
+    }
+}
+
+fn check_game_end(
+    mut game_state: ResMut<GameState>,
+) {
+    // Only check if the game is still ongoing
+    if game_state.game_end_state != GameEndState::Ongoing {
+        return;
+    }
+
+    let current_turn = game_state.board.current_turn();
+    
+    // Check for checkmate
+    if game_state.board.is_checkmate() {
+        // The winner is the opposite color of current turn
+        let winner = match current_turn {
+            ChessColor::White => ChessColor::Black,
+            ChessColor::Black => ChessColor::White,
+        };
+        game_state.game_end_state = GameEndState::Checkmate(winner);
+        return;
+    }
+
+    // Check for stalemate
+    if game_state.board.is_stalemate() {
+        game_state.game_end_state = GameEndState::Stalemate;
+        return;
+    }
+
+    // Check for insufficient material
+    if is_insufficient_material(&game_state.board) {
+        game_state.game_end_state = GameEndState::InsufficientMaterial;
+        return;
+    }
+}
+
+fn update_game_end_overlay(
+    mut commands: Commands,
+    game_state: Res<GameState>,
+    query: Query<Entity, With<GameEndOverlay>>,
+) {
+    match game_state.game_end_state {
+        GameEndState::Ongoing => {
+            // Remove overlay if it exists
+            for entity in query.iter() {
+                commands.entity(entity).despawn_recursive();
+            }
+        }
+        _ => {
+            // Only spawn overlay if it doesn't exist
+            if query.is_empty() {
+                spawn_game_end_overlay(&mut commands, &game_state);
+            }
+        }
+    }
+}
+
+fn spawn_game_end_overlay(commands: &mut Commands, game_state: &GameState) {
+    let message = match game_state.game_end_state {
+        GameEndState::Checkmate(winner) => {
+            match winner {
+                ChessColor::White => "Checkmate! White wins!",
+                ChessColor::Black => "Checkmate! Black wins!",
+            }
+        }
+        GameEndState::Stalemate => "Game Over - Stalemate!",
+        GameEndState::InsufficientMaterial => "Game Over - Insufficient Material!",
+        GameEndState::Ongoing => unreachable!(),
+    };
+
+    commands
+        .spawn((
+            NodeBundle {
+                style: Style {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                background_color: Color::rgba(0.0, 0.0, 0.0, 0.7).into(),
+                ..default()
+            },
+            GameEndOverlay,
+        ))
+        .with_children(|parent| {
+            parent.spawn(
+                TextBundle::from_section(
+                    message,
+                    TextStyle {
+                        font_size: 40.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                )
+                .with_style(Style {
+                    margin: UiRect::all(Val::Px(8.0)),
+                    ..default()
+                }),
+            );
+
+            // Add "New Game" button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        margin: UiRect::all(Val::Px(8.0)),
+                        padding: UiRect::all(Val::Px(8.0)),
+                        ..default()
+                    },
+                    background_color: Color::rgb(0.4, 0.4, 0.4).into(),
+                    ..default()
+                },
+                MenuButton,
+            ))
+            .with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "New Game",
+                    TextStyle {
+                        font_size: 30.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+        });
+}
+
+fn is_insufficient_material(board: &Board) -> bool {
+    let mut white_pieces = Vec::new();
+    let mut black_pieces = Vec::new();
+
+    // Collect all pieces
+    for rank in 1..=8 {
+        for file in 1..=8 {
+            if let Some(piece) = board.get_piece(Position { rank, file }) {
+                match piece.color {
+                    ChessColor::White => white_pieces.push(piece.piece_type),
+                    ChessColor::Black => black_pieces.push(piece.piece_type),
+                }
+            }
+        }
+    }
+
+    // King vs King
+    if white_pieces.len() == 1 && black_pieces.len() == 1 {
+        return true;
+    }
+
+    // King and Bishop vs King or King and Knight vs King
+    if (white_pieces.len() == 2 && black_pieces.len() == 1) ||
+       (white_pieces.len() == 1 && black_pieces.len() == 2) {
+        let longer_side = if white_pieces.len() > black_pieces.len() { &white_pieces } else { &black_pieces };
+        if longer_side.contains(&ChessPieceType::Bishop) || longer_side.contains(&ChessPieceType::Knight) {
+            return true;
+        }
+    }
+
+    // King and Bishop vs King and Bishop (same color bishops)
+    if white_pieces.len() == 2 && black_pieces.len() == 2 {
+        if white_pieces.contains(&ChessPieceType::Bishop) && black_pieces.contains(&ChessPieceType::Bishop) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn spawn_promotion_dialog(
+    commands: &mut Commands,
+    chess_assets: &ChessAssets,
+    is_white: bool,
+) {
+    commands.spawn((
+        NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            background_color: Color::rgba(0.0, 0.0, 0.0, 0.7).into(),
+            ..default()
+        },
+        PromotionDialog,
+    ))
+    .with_children(|parent| {
+        // Promotion options container
+        parent.spawn(NodeBundle {
+            style: Style {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            background_color: Color::rgb(0.2, 0.2, 0.2).into(),
+            ..default()
+        })
+        .with_children(|parent| {
+            // Spawn buttons for each promotion piece type
+            for piece_type in [ChessPieceType::Queen, ChessPieceType::Rook, 
+                             ChessPieceType::Bishop, ChessPieceType::Knight] {
+                let texture = match piece_type {
+                    ChessPieceType::Queen => if is_white { &chess_assets.white_queen } else { &chess_assets.black_queen },
+                    ChessPieceType::Rook => if is_white { &chess_assets.white_rook } else { &chess_assets.black_rook },
+                    ChessPieceType::Bishop => if is_white { &chess_assets.white_bishop } else { &chess_assets.black_bishop },
+                    ChessPieceType::Knight => if is_white { &chess_assets.white_knight } else { &chess_assets.black_knight },
+                    _ => unreachable!(),
+                };
+
+                parent.spawn((
+                    ButtonBundle {
+                        style: Style {
+                            width: Val::Px(SQUARE_SIZE),
+                            height: Val::Px(SQUARE_SIZE),
+                            margin: UiRect::all(Val::Px(5.0)),
+                            ..default()
+                        },
+                        background_color: Color::rgb(0.3, 0.3, 0.3).into(),
+                        ..default()
+                    },
+                    PromotionButton { piece_type },
+                ))
+                .with_children(|parent| {
+                    parent.spawn(ImageBundle {
+                        style: Style {
+                            width: Val::Px(SQUARE_SIZE - 10.0),
+                            height: Val::Px(SQUARE_SIZE - 10.0),
+                            margin: UiRect::all(Val::Px(5.0)),
+                            ..default()
+                        },
+                        image: UiImage::new(texture.clone()),
+                        ..default()
+                    });
+                });
+            }
+        });
+    });
+}
+
+fn handle_promotion_selection(
+    mut commands: Commands,
+    mut game_state: ResMut<GameState>,
+    chess_assets: Res<ChessAssets>,
+    mut interaction_query: Query<
+        (&Interaction, &PromotionButton),
+        (Changed<Interaction>, With<PromotionButton>),
+    >,
+    dialog_query: Query<Entity, With<PromotionDialog>>,
+    mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
+    mut turn_state: ResMut<NextState<Turn>>,
+) {
+    let mut promotion_to_handle = None;
+    
+    // First, check if we have a promotion to handle
+    if let Some(promotion) = &game_state.pending_promotion {
+        for (interaction, button) in interaction_query.iter() {
+            if *interaction == Interaction::Pressed {
+                promotion_to_handle = Some((promotion.from, promotion.to, button.piece_type));
+            }
+        }
+    }
+
+    // Then handle the promotion if needed
+    if let Some((from, to, piece_type)) = promotion_to_handle {
+        let promotion_move = Move::with_promotion(from, to, piece_type);
+
+        if game_state.board.make_move(promotion_move).is_ok() {
+            // Remove the old pawn
+            for (entity, piece, _) in pieces.iter() {
+                if piece.position == from {
+                    commands.entity(entity).despawn();
+                    break;
+                }
+            }
+
+            // Spawn the promoted piece
+            let world_pos = board_position_to_world(to, 2.0);
+            commands.spawn((
+                SpriteBundle {
+                    texture: match piece_type {
+                        ChessPieceType::Queen => chess_assets.white_queen.clone(),
+                        ChessPieceType::Rook => chess_assets.white_rook.clone(),
+                        ChessPieceType::Bishop => chess_assets.white_bishop.clone(),
+                        ChessPieceType::Knight => chess_assets.white_knight.clone(),
+                        _ => unreachable!(),
+                    },
+                    transform: Transform::from_translation(world_pos)
+                        .with_scale(Vec3::splat(1.0)),
+                    sprite: Sprite {
+                        custom_size: Some(Vec2::new(SQUARE_SIZE - 10.0, SQUARE_SIZE - 10.0)),
+                        ..default()
+                    },
+                    ..default()
+                },
+                Piece {
+                    piece_type,
+                    is_white: true,
+                    position: to,
+                },
+            ));
+
+            // Remove the promotion dialog
+            for entity in dialog_query.iter() {
+                commands.entity(entity).despawn_recursive();
+            }
+
+            // Clear pending promotion
+            game_state.pending_promotion = None;
+
+            // Switch to AI's turn
+            turn_state.set(Turn::AI);
+        }
     }
 }

@@ -129,6 +129,13 @@ const KING_ENDGAME_TABLE: [[i32; 8]; 8] = [
     [-50, -30, -30, -30, -30, -30, -30, -50]
 ];
 
+// Add endgame-specific constants
+const KING_TROPISM_ENDGAME: i32 = 20;  // Bonus for pieces being close to enemy king in endgame
+const KING_CORNER_PUSH: i32 = 30;      // Bonus for pushing enemy king towards corner
+const QUEEN_KING_TROPISM: i32 = 40;    // Extra bonus for queen being close to enemy king
+const ROOK_KING_TROPISM: i32 = 30;     // Extra bonus for rook being close to enemy king
+const PAWN_ENDGAME_BONUS: [i32; 8] = [0, 10, 20, 40, 60, 100, 150, 200]; // Much higher bonus for passed pawns in endgame
+
 // Function to evaluate a position
 pub fn evaluate_position(board: &Board) -> i32 {
     let mut score = 0;
@@ -309,21 +316,95 @@ fn is_endgame_phase(board: &Board) -> bool {
 }
 
 fn adjust_endgame_score(board: &Board, mut score: i32) -> i32 {
-    // In endgame, encourage pushing opponent king to the corner
-    for rank in 1..=8 {
+    let mut enemy_king_pos = None;
+    let current_color = board.current_turn();
+    
+    // Find enemy king position
+    'outer: for rank in 1..=8 {
         for file in 1..=8 {
             let pos = Position { rank, file };
             if let Some(piece) = board.get_piece(pos) {
-                if piece.piece_type == PieceType::King {
-                    let multiplier = if piece.color == Color::White { -1 } else { 1 };
-                    // Distance from center penalty
-                    let center_dist = ((4.5 - rank as f32).abs() + (4.5 - file as f32).abs()) as i32;
-                    score += multiplier * center_dist * 10;
+                if piece.piece_type == PieceType::King && piece.color != current_color {
+                    enemy_king_pos = Some(pos);
+                    break 'outer;
                 }
             }
         }
     }
+
+    if let Some(enemy_king) = enemy_king_pos {
+        // Encourage pushing enemy king to corner
+        let corner_distance = ((4.5 - enemy_king.rank as f32).abs() + 
+                             (4.5 - enemy_king.file as f32).abs()) as i32;
+        score += corner_distance * KING_CORNER_PUSH;
+
+        // Add tropism bonus for pieces being close to enemy king
+        for rank in 1..=8 {
+            for file in 1..=8 {
+                let pos = Position { rank, file };
+                if let Some(piece) = board.get_piece(pos) {
+                    if piece.color == current_color {
+                        let distance = ((enemy_king.rank as i32 - rank as i32).abs() +
+                                      (enemy_king.file as i32 - file as i32).abs());
+                        
+                        // Different bonuses based on piece type
+                        match piece.piece_type {
+                            PieceType::Queen => {
+                                score += (8 - distance) * QUEEN_KING_TROPISM;
+                            }
+                            PieceType::Rook => {
+                                score += (8 - distance) * ROOK_KING_TROPISM;
+                            }
+                            _ => {
+                                score += (8 - distance) * KING_TROPISM_ENDGAME;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Increase value of passed pawns in endgame
+        for rank in 1..=8 {
+            for file in 1..=8 {
+                let pos = Position { rank, file };
+                if let Some(piece) = board.get_piece(pos) {
+                    if piece.piece_type == PieceType::Pawn && piece.color == current_color {
+                        if is_passed_pawn(board, pos, current_color) {
+                            let rank_idx = if current_color == Color::White {
+                                rank - 1
+                            } else {
+                                8 - rank
+                            } as usize;
+                            score += PAWN_ENDGAME_BONUS[rank_idx];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     score
+}
+
+fn is_passed_pawn(board: &Board, pos: Position, color: Color) -> bool {
+    let file = pos.file;
+    let rank = if color == Color::White { pos.rank } else { 9 - pos.rank };
+    
+    // Check if there are any enemy pawns that can block or capture
+    let enemy_pawn_ranks = if color == Color::White { (pos.rank + 1)..=8 } else { 1..=pos.rank };
+    for check_file in (file.saturating_sub(1))..=file.saturating_add(1) {
+        if check_file > 8 { continue; }
+        for check_rank in enemy_pawn_ranks.clone() {
+            let check_pos = Position { rank: check_rank, file: check_file };
+            if let Some(piece) = board.get_piece(check_pos) {
+                if piece.piece_type == PieceType::Pawn && piece.color != color {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn get_piece_value(piece_type: PieceType) -> i32 {
