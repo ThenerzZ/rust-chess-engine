@@ -260,32 +260,57 @@ fn handle_input(
                         break;
                     }
 
-                    if let Some((selected_entity, from_pos)) = selected_piece {
-                        // Try to make the move
-                        let chess_move = Move::new(from_pos, square.position);
-                        if game_state.board.make_move(chess_move).is_ok() {
-                            // Update piece position
-                            if let Ok((_, mut piece, _)) = pieces.get_mut(selected_entity) {
-                                piece.position = square.position;
-                            }
-                            commands.entity(selected_entity).remove::<SelectedPiece>();
-                            turn_state.set(Turn::AI);
-                        }
-                    } else {
-                        // Try to select a piece
-                        if let Some(piece) = game_state.board.get_piece(square.position) {
-                            if piece.color == ChessColor::White {
-                                // Remove any existing selection
-                                for entity in selected.iter() {
-                                    commands.entity(entity).remove::<SelectedPiece>();
+                    // Check if clicked on a piece
+                    let clicked_piece = game_state.board.get_piece(square.position);
+
+                    match (selected_piece, clicked_piece) {
+                        // Case 1: We have a selected piece and clicked on a valid destination or enemy piece
+                        (Some((selected_entity, from_pos)), maybe_piece) => {
+                            if maybe_piece.map_or(true, |p| p.color != ChessColor::White) {
+                                // Try to make the move
+                                let chess_move = Move::new(from_pos, square.position);
+                                if game_state.board.make_move(chess_move).is_ok() {
+                                    // Update piece position
+                                    if let Ok((_, mut piece, _)) = pieces.get_mut(selected_entity) {
+                                        piece.position = square.position;
+                                    }
+                                    commands.entity(selected_entity).remove::<SelectedPiece>();
+                                    turn_state.set(Turn::AI);
+                                } else {
+                                    // Invalid move, deselect the piece
+                                    commands.entity(selected_entity).remove::<SelectedPiece>();
                                 }
-                                // Find and select the piece entity
+                            } else {
+                                // Clicked on a friendly piece, switch selection
+                                commands.entity(selected_entity).remove::<SelectedPiece>();
+                                // Select the new piece
                                 for (entity, piece, _) in pieces.iter() {
                                     if piece.position == square.position {
                                         commands.entity(entity).insert(SelectedPiece);
                                         break;
                                     }
                                 }
+                            }
+                        },
+                        // Case 2: No piece selected and clicked on a friendly piece
+                        (None, Some(piece)) if piece.color == ChessColor::White => {
+                            // Remove any existing selection (shouldn't be any, but just in case)
+                            for entity in selected.iter() {
+                                commands.entity(entity).remove::<SelectedPiece>();
+                            }
+                            // Select the new piece
+                            for (entity, piece, _) in pieces.iter() {
+                                if piece.position == square.position {
+                                    commands.entity(entity).insert(SelectedPiece);
+                                    break;
+                                }
+                            }
+                        },
+                        // Case 3: No piece selected and clicked on empty square or enemy piece
+                        _ => {
+                            // Deselect any selected pieces
+                            for entity in selected.iter() {
+                                commands.entity(entity).remove::<SelectedPiece>();
                             }
                         }
                     }
