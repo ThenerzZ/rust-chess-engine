@@ -1,100 +1,47 @@
 # Create resources directory
 New-Item -ItemType Directory -Force -Path "assets"
 
-# Create valid move indicator
-$circle = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="40" fill="rgba(0,255,0,0.3)" stroke="none"/>
-</svg>
-"@
-$circle | Out-File "assets/valid_move.svg" -Encoding UTF8
+# Define the base URL for chess piece sprites
+$baseUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb"
 
-# Convert SVG to PNG using ImageMagick
-& "C:\Program Files\ImageMagick-7.1.1-Q16-HDRI\magick.exe" convert "assets/valid_move.svg" "assets/valid_move.png"
-
-# Create piece SVGs and convert to PNGs
+# Define the piece URLs (Merida chess set)
 $pieces = @{
-    "white_king" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♔</text>
-</svg>
-"@
-    "white_queen" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♕</text>
-</svg>
-"@
-    "white_rook" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♖</text>
-</svg>
-"@
-    "white_bishop" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♗</text>
-</svg>
-"@
-    "white_knight" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♘</text>
-</svg>
-"@
-    "white_pawn" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="white" stroke="black" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="black">♙</text>
-</svg>
-"@
-    "black_king" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♔</text>
-</svg>
-"@
-    "black_queen" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♕</text>
-</svg>
-"@
-    "black_rook" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♖</text>
-</svg>
-"@
-    "black_bishop" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♗</text>
-</svg>
-"@
-    "black_knight" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♘</text>
-</svg>
-"@
-    "black_pawn" = @"
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <circle cx="50" cy="50" r="45" fill="black" stroke="white" stroke-width="2"/>
-  <text x="50" y="70" font-size="60" text-anchor="middle" fill="white">♙</text>
-</svg>
-"@
+    "white_king" = "4/42/Chess_klt45.svg/150px-Chess_klt45.svg.png"
+    "white_queen" = "1/15/Chess_qlt45.svg/150px-Chess_qlt45.svg.png"
+    "white_rook" = "7/72/Chess_rlt45.svg/150px-Chess_rlt45.svg.png"
+    "white_bishop" = "b/b1/Chess_blt45.svg/150px-Chess_blt45.svg.png"
+    "white_knight" = "7/70/Chess_nlt45.svg/150px-Chess_nlt45.svg.png"
+    "white_pawn" = "4/45/Chess_plt45.svg/150px-Chess_plt45.svg.png"
+    "black_king" = "f/f0/Chess_kdt45.svg/150px-Chess_kdt45.svg.png"
+    "black_queen" = "4/47/Chess_qdt45.svg/150px-Chess_qdt45.svg.png"
+    "black_rook" = "f/ff/Chess_rdt45.svg/150px-Chess_rdt45.svg.png"
+    "black_bishop" = "9/98/Chess_bdt45.svg/150px-Chess_bdt45.svg.png"
+    "black_knight" = "e/ef/Chess_ndt45.svg/150px-Chess_ndt45.svg.png"
+    "black_pawn" = "c/c7/Chess_pdt45.svg/150px-Chess_pdt45.svg.png"
 }
 
-# Save all pieces and convert to PNG
+# Download each piece
 foreach ($piece in $pieces.Keys) {
-    $pieces[$piece] | Out-File "assets/$piece.svg" -Encoding UTF8
-    & "C:\Program Files\ImageMagick-7.1.1-Q16-HDRI\magick.exe" convert "assets/$piece.svg" "assets/$piece.png"
-    Remove-Item "assets/$piece.svg"
-    Write-Host "Created $piece.png"
+    $url = "$baseUrl/$($pieces[$piece])"
+    $outFile = "assets/$piece.png"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $outFile
+        Write-Host "Downloaded $piece.png"
+    } catch {
+        Write-Host "Failed to download $piece.png: $_"
+    }
 }
 
+# Create valid move indicator
+$validMove = @"
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150">
+  <circle cx="75" cy="75" r="60" fill="rgba(0,255,0,0.3)" stroke="rgba(0,255,0,0.5)" stroke-width="4"/>
+</svg>
+"@
+$validMove | Out-File "assets/valid_move.svg" -Encoding UTF8
+
+# Convert valid move indicator to PNG
+& "C:\Program Files\Inkscape\bin\inkscape.exe" --export-type=png --export-filename="assets/valid_move.png" "assets/valid_move.svg"
 Remove-Item "assets/valid_move.svg"
+
 Write-Host "All resources created!" 
