@@ -21,19 +21,14 @@ A high-performance chess engine written in Rust, featuring advanced search algor
 
 ### User Interface
 - Modern, responsive Bevy-based UI
-- Drag-and-drop piece movement
 - Legal move highlighting
 - Move history tracking
-- Game state visualization
-- Time control display
 
 ### Game Features
 - All standard chess rules implemented
 - Support for special moves (castling, en passant, promotions)
-- Time controls
 - Move validation
 - Game state persistence
-- PGN export/import
 
 ## Getting Started
 
