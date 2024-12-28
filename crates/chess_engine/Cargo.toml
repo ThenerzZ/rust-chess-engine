@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 chess_core = { path = "../chess_core" }
 thiserror = { workspace = true }
-log = { workspace = true } 
+log = { workspace = true }
+rayon = "1.8.0" 

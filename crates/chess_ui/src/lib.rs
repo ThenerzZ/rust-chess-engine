@@ -21,14 +21,16 @@ struct GameState {
     board: Board,
     ai: ChessAI,
     ai_thinking_timer: Timer,
+    ai_task: Option<Task<Option<Move>>>,
 }
 
 impl Default for GameState {
     fn default() -> Self {
         Self {
             board: Board::new(),
-            ai: ChessAI::new(4),
+            ai: ChessAI::new(5),
             ai_thinking_timer: Timer::from_seconds(0.5, TimerMode::Once),
+            ai_task: None,
         }
     }
 }
@@ -351,33 +353,51 @@ fn update_ai(
 
     game_state.ai_thinking_timer.tick(time.delta());
 
-    if game_state.ai_thinking_timer.finished() {
-        if let Some(ai_move) = game_state.ai.get_best_move(&game_state.board) {
-            if game_state.board.make_move(ai_move).is_ok() {
-                // Update piece position in UI
-                for (mut piece, mut transform) in pieces.iter_mut() {
-                    if piece.position == ai_move.from {
-                        piece.position = ai_move.to;
-                        
-                        // Update piece transform
-                        let window = windows.single();
-                        let min_dimension = window.width().min(window.height());
-                        let square_size = min_dimension / 10.0;
-                        let board_size = 8.0 * square_size;
-                        let board_offset = Vec3::new(-board_size / 2.0, -board_size / 2.0, 0.0);
+    // Start AI computation if not already started
+    if game_state.ai_task.is_none() && game_state.ai_thinking_timer.finished() {
+        let board = game_state.board.clone();
+        let ai = game_state.ai.clone();
+        let thread_pool = AsyncComputeTaskPool::get();
+        
+        game_state.ai_task = Some(thread_pool.spawn(async move {
+            ai.get_best_move(&board)
+        }));
+    }
 
-                        transform.translation = Vec3::new(
-                            board_offset.x + (piece.position.file as f32 - 1.0) * square_size + square_size / 2.0,
-                            board_offset.y + (8.0 - piece.position.rank as f32) * square_size + square_size / 2.0,
-                            2.0,
-                        );
-                        break;
+    // Check if AI has finished computing
+    if let Some(mut task) = game_state.ai_task.take() {
+        if let Some(ai_move) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut task)) {
+            // AI computation finished
+            if let Some(chess_move) = ai_move {
+                if game_state.board.make_move(chess_move).is_ok() {
+                    // Update piece position in UI
+                    for (mut piece, mut transform) in pieces.iter_mut() {
+                        if piece.position == chess_move.from {
+                            piece.position = chess_move.to;
+                            
+                            // Update piece transform
+                            let window = windows.single();
+                            let min_dimension = window.width().min(window.height());
+                            let square_size = min_dimension / 10.0;
+                            let board_size = 8.0 * square_size;
+                            let board_offset = Vec3::new(-board_size / 2.0, -board_size / 2.0, 0.0);
+
+                            transform.translation = Vec3::new(
+                                board_offset.x + (piece.position.file as f32 - 1.0) * square_size + square_size / 2.0,
+                                board_offset.y + (8.0 - piece.position.rank as f32) * square_size + square_size / 2.0,
+                                2.0,
+                            );
+                            break;
+                        }
                     }
+                    turn_state.set(Turn::Player);
                 }
-                turn_state.set(Turn::Player);
             }
+            game_state.ai_thinking_timer.reset();
+        } else {
+            // AI computation still running
+            game_state.ai_task = Some(task);
         }
-        game_state.ai_thinking_timer.reset();
     }
 }
 
