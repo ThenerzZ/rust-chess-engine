@@ -88,6 +88,15 @@ struct MovingPiece {
     speed: f32,
 }
 
+#[derive(Component)]
+struct GameStatusText;
+
+#[derive(Component)]
+struct MenuButton;
+
+#[derive(Component)]
+struct LastMoveText;
+
 impl Plugin for ChessUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -111,6 +120,9 @@ impl Plugin for ChessUiPlugin {
             update_ui_text,
             show_valid_moves,
             update_piece_movement,
+            update_game_status,
+            handle_new_game_button,
+            update_last_move,
         ));
     }
 }
@@ -289,8 +301,7 @@ fn handle_resize(
 ) {
     let window = windows.single();
     let min_dimension = window.width().min(window.height());
-    let square_size = min_dimension / 10.0;
-    let board_size = 8.0 * square_size;
+    let board_size = 8.0 * SQUARE_SIZE;
     
     // Update board
     if let Ok((mut transform, mut sprite)) = board_query.get_single_mut() {
@@ -303,20 +314,20 @@ fn handle_resize(
 
     // Update squares
     for (mut transform, mut sprite, square) in square_query.iter_mut() {
-        sprite.custom_size = Some(Vec2::new(square_size, square_size));
+        sprite.custom_size = Some(Vec2::new(SQUARE_SIZE, SQUARE_SIZE));
         transform.translation = Vec3::new(
-            board_offset.x + (square.position.file as f32 - 1.0) * square_size + square_size / 2.0,
-            board_offset.y + (8.0 - square.position.rank as f32) * square_size + square_size / 2.0,
+            board_offset.x + (square.position.file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
+            board_offset.y + (8.0 - square.position.rank as f32) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
             1.0,
         );
     }
 
     // Update pieces
     for (mut transform, mut sprite, piece) in piece_query.iter_mut() {
-        sprite.custom_size = Some(Vec2::new(square_size * 0.8, square_size * 0.8));
+        sprite.custom_size = Some(Vec2::new(SQUARE_SIZE * 0.9, SQUARE_SIZE * 0.9));
         transform.translation = Vec3::new(
-            board_offset.x + (piece.position.file as f32 - 1.0) * square_size + square_size / 2.0,
-            board_offset.y + (8.0 - piece.position.rank as f32) * square_size + square_size / 2.0,
+            board_offset.x + (piece.position.file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
+            board_offset.y + (8.0 - piece.position.rank as f32) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
             2.0,
         );
     }
@@ -345,19 +356,21 @@ fn handle_input(
         .map(|ray| ray.origin.truncate())
     {
         if mouse_button.just_pressed(MouseButton::Left) {
-            // Calculate clicked board position
             let clicked_pos = Position {
                 file: ((world_position.x + 4.0 * SQUARE_SIZE) / SQUARE_SIZE).floor() as u8 + 1,
                 rank: (8.0 - ((world_position.y + 4.0 * SQUARE_SIZE) / SQUARE_SIZE).floor()) as u8,
             };
 
-            // Check if there's already a selected piece
             if let Ok(selected_entity) = selected_pieces.get_single() {
-                // Get the selected piece's details
                 if let Some((_, selected_piece, _)) = pieces.iter().find(|(entity, _, _)| *entity == selected_entity) {
-                    // Check if the clicked position is a valid move
                     let valid_moves = game_state.board.get_valid_moves(selected_piece.position);
                     if let Some(valid_move) = valid_moves.iter().find(|m| m.to == clicked_pos) {
+                        // Check if there's a piece at the target position (capture)
+                        if let Some((captured_entity, _, _)) = pieces.iter().find(|(_, p, _)| p.position == clicked_pos) {
+                            // Despawn the captured piece
+                            commands.entity(captured_entity).despawn();
+                        }
+
                         // Make the move
                         if game_state.board.make_move(*valid_move).is_ok() {
                             // Update piece positions
@@ -453,6 +466,13 @@ fn update_ai(
         if let Some(ai_move) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut task)) {
             if let Some(chess_move) = ai_move {
                 if game_state.board.make_move(chess_move).is_ok() {
+                    // Check for and handle captures
+                    if let Some((captured_entity, _, _)) = pieces.iter().find(|(_, p, _)| p.position == chess_move.to) {
+                        // Despawn the captured piece
+                        commands.entity(captured_entity).despawn();
+                    }
+
+                    // Move the piece
                     for (entity, mut piece, mut transform) in pieces.iter_mut() {
                         if piece.position == chess_move.from {
                             move_piece(&mut commands, entity, &mut piece, &mut transform, chess_move.from, chess_move.to, windows.single());
@@ -470,23 +490,121 @@ fn update_ai(
 }
 
 fn spawn_ui(mut commands: Commands) {
-    commands.spawn((
-        TextBundle::from_section(
-            "AI is thinking...",
-            TextStyle {
-                font_size: 30.0,
-                color: Color::WHITE,
+    // Main UI container
+    commands.spawn(NodeBundle {
+        style: Style {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::SpaceBetween,
+            ..default()
+        },
+        ..default()
+    }).with_children(|parent| {
+        // Top bar
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(50.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
                 ..default()
             },
-        )
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            right: Val::Px(10.0),
+            background_color: Color::rgb(0.2, 0.2, 0.2).into(),
             ..default()
-        }),
-        AiThinkingText,
-    ));
+        }).with_children(|parent| {
+            // Left section with game status
+            parent.spawn(NodeBundle {
+                style: Style {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::right(Val::Px(20.0)),
+                    ..default()
+                },
+                ..default()
+            }).with_children(|parent| {
+                // Game status text
+                parent.spawn((
+                    TextBundle::from_section(
+                        "White's Turn",
+                        TextStyle {
+                            font_size: 24.0,
+                            color: Color::WHITE,
+                            ..default()
+                        },
+                    ),
+                    GameStatusText,
+                ));
+
+                // AI thinking text
+                parent.spawn((
+                    TextBundle::from_section(
+                        "AI is thinking...",
+                        TextStyle {
+                            font_size: 24.0,
+                            color: Color::YELLOW,
+                            ..default()
+                        },
+                    )
+                    .with_style(Style {
+                        margin: UiRect::left(Val::Px(20.0)),
+                        ..default()
+                    }),
+                    AiThinkingText,
+                ));
+            });
+
+            // New Game button
+            parent.spawn((
+                ButtonBundle {
+                    style: Style {
+                        padding: UiRect::all(Val::Px(10.0)),
+                        ..default()
+                    },
+                    background_color: Color::rgb(0.4, 0.4, 0.4).into(),
+                    ..default()
+                },
+                MenuButton,
+            )).with_children(|parent| {
+                parent.spawn(TextBundle::from_section(
+                    "New Game",
+                    TextStyle {
+                        font_size: 20.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ));
+            });
+        });
+
+        // Bottom bar
+        parent.spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(40.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            background_color: Color::rgb(0.2, 0.2, 0.2).into(),
+            ..default()
+        }).with_children(|parent| {
+            // Last move text
+            parent.spawn((
+                TextBundle::from_section(
+                    "",
+                    TextStyle {
+                        font_size: 20.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ),
+                LastMoveText,
+            ));
+        });
+    });
 }
 
 fn update_ui_text(
@@ -576,19 +694,109 @@ fn move_piece(
 ) {
     piece.position = to;
     
-    let min_dimension = window.width().min(window.height());
-    let square_size = min_dimension / 10.0;
-    let board_size = 8.0 * square_size;
+    let board_size = 8.0 * SQUARE_SIZE;
     let board_offset = Vec3::new(-board_size / 2.0, -board_size / 2.0, 0.0);
 
     let target_pos = Vec3::new(
-        board_offset.x + (to.file as f32 - 1.0) * square_size + square_size / 2.0,
-        board_offset.y + (8.0 - to.rank as f32) * square_size + square_size / 2.0,
+        board_offset.x + (to.file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
+        board_offset.y + (8.0 - to.rank as f32) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
         2.0,
     );
 
     commands.entity(piece_entity).insert(MovingPiece {
         target_position: target_pos,
-        speed: 500.0, // Adjust this value to change movement speed
+        speed: 500.0,
     });
+}
+
+fn update_game_status(
+    game_state: Res<GameState>,
+    turn: Res<State<Turn>>,
+    mut query: Query<&mut Text, With<GameStatusText>>,
+) {
+    if let Ok(mut text) = query.get_single_mut() {
+        let status = if game_state.board.is_checkmate() {
+            if *turn.get() == Turn::Player {
+                "Checkmate - Black wins!"
+            } else {
+                "Checkmate - White wins!"
+            }
+        } else if game_state.board.is_stalemate() {
+            "Stalemate - Draw!"
+        } else {
+            match *turn.get() {
+                Turn::Player => "White's Turn",
+                Turn::AI => "Black's Turn",
+            }
+        };
+        text.sections[0].value = status.to_string();
+    }
+}
+
+fn handle_new_game_button(
+    mut interaction_query: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<MenuButton>),
+    >,
+    mut game_state: ResMut<GameState>,
+    mut turn_state: ResMut<NextState<Turn>>,
+    mut pieces: Query<Entity, With<Piece>>,
+    mut commands: Commands,
+    chess_assets: Res<ChessAssets>,
+) {
+    for (interaction, mut color) in &mut interaction_query {
+        match *interaction {
+            Interaction::Pressed => {
+                // Reset game state
+                game_state.board = Board::new();
+                game_state.ai_thinking_timer.reset();
+                game_state.ai_task = None;
+                
+                // Remove all pieces
+                for entity in pieces.iter_mut() {
+                    commands.entity(entity).despawn();
+                }
+                
+                // Spawn new pieces
+                let board_size = 8.0;
+                let board_offset = Vec3::new(
+                    -board_size * SQUARE_SIZE / 2.0,
+                    -board_size * SQUARE_SIZE / 2.0,
+                    0.0
+                );
+                spawn_initial_pieces(&mut commands, board_offset, &chess_assets);
+                
+                // Reset turn to player
+                turn_state.set(Turn::Player);
+                
+                // Update button color
+                *color = Color::rgb(0.3, 0.3, 0.3).into();
+            }
+            Interaction::Hovered => {
+                *color = Color::rgb(0.5, 0.5, 0.5).into();
+            }
+            Interaction::None => {
+                *color = Color::rgb(0.4, 0.4, 0.4).into();
+            }
+        }
+    }
+}
+
+fn update_last_move(
+    mut last_move_query: Query<&mut Text, With<LastMoveText>>,
+    game_state: Res<GameState>,
+) {
+    if let Ok(mut text) = last_move_query.get_single_mut() {
+        if let Some(last_move) = game_state.board.last_move() {
+            let from_square = format!("{}{}", 
+                (b'a' + (last_move.from.file - 1)) as char,
+                last_move.from.rank
+            );
+            let to_square = format!("{}{}", 
+                (b'a' + (last_move.to.file - 1)) as char,
+                last_move.to.rank
+            );
+            text.sections[0].value = format!("Last move: {} → {}", from_square, to_square);
+        }
+    }
 }
