@@ -1,0 +1,21 @@
+[package]
+name = "chess-engine"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [
+    "crates/chess_core",
+    "crates/chess_engine",
+    "crates/chess_ui",
+]
+
+[workspace.dependencies]
+thiserror = "1.0"
+log = "0.4"
+
+[dependencies]
+bevy = "0.12.0"
+chess_core = { path = "crates/chess_core" }
+chess_engine = { path = "crates/chess_engine" }
+chess_ui = { path = "crates/chess_ui" } 
