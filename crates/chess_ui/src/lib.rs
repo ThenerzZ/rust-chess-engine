@@ -252,14 +252,8 @@ fn spawn_piece(
     rank: u8,
     board_offset: Vec3,
     assets: &ChessAssets,
-) -> Entity {
-    let position = Vec3::new(
-        board_offset.x + (file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
-        board_offset.y + (rank as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
-        2.0,
-    );
-
-    let sprite = match (piece_type, is_white) {
+) {
+    let texture = match (piece_type, is_white) {
         (ChessPieceType::King, true) => assets.white_king.clone(),
         (ChessPieceType::Queen, true) => assets.white_queen.clone(),
         (ChessPieceType::Rook, true) => assets.white_rook.clone(),
@@ -274,12 +268,16 @@ fn spawn_piece(
         (ChessPieceType::Pawn, false) => assets.black_pawn.clone(),
     };
 
+    let position = Position { rank, file };
+    let world_pos = board_position_to_world(position, 2.0);
+
     commands.spawn((
         SpriteBundle {
-            texture: sprite,
-            transform: Transform::from_translation(position),
+            texture,
+            transform: Transform::from_translation(world_pos)
+                .with_scale(Vec3::splat(1.0)),
             sprite: Sprite {
-                custom_size: Some(Vec2::new(SQUARE_SIZE * 0.9, SQUARE_SIZE * 0.9)),
+                custom_size: Some(Vec2::new(SQUARE_SIZE * 0.8, SQUARE_SIZE * 0.8)),
                 anchor: Anchor::Center,
                 ..default()
             },
@@ -288,9 +286,9 @@ fn spawn_piece(
         Piece {
             piece_type,
             is_white,
-            position: Position { file, rank },
+            position,
         },
-    )).id()
+    ));
 }
 
 fn handle_resize(
@@ -317,7 +315,7 @@ fn handle_resize(
         sprite.custom_size = Some(Vec2::new(SQUARE_SIZE, SQUARE_SIZE));
         transform.translation = Vec3::new(
             board_offset.x + (square.position.file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
-            board_offset.y + (8.0 - square.position.rank as f32) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
+            board_offset.y + (square.position.rank as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
             1.0,
         );
     }
@@ -327,7 +325,7 @@ fn handle_resize(
         sprite.custom_size = Some(Vec2::new(SQUARE_SIZE * 0.9, SQUARE_SIZE * 0.9));
         transform.translation = Vec3::new(
             board_offset.x + (piece.position.file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
-            board_offset.y + (8.0 - piece.position.rank as f32) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
+            board_offset.y + (piece.position.rank as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
             2.0,
         );
     }
@@ -335,72 +333,69 @@ fn handle_resize(
 
 fn handle_input(
     mut commands: Commands,
+    buttons: Res<Input<MouseButton>>,
     windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform)>,
     mut game_state: ResMut<GameState>,
-    pieces: Query<(Entity, &Piece, &Transform)>,
+    mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
     selected_pieces: Query<Entity, With<SelectedPiece>>,
-    mut next_turn: ResMut<NextState<Turn>>,
-    mouse_button: Res<Input<MouseButton>>,
+    mut turn_state: ResMut<NextState<Turn>>,
     turn: Res<State<Turn>>,
 ) {
+    // Only handle input during player's turn
     if *turn.get() != Turn::Player {
         return;
     }
 
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
+    if game_state.board.is_checkmate() || game_state.board.is_stalemate() {
+        return;
+    }
 
-    if let Some(world_position) = window.cursor_position()
-        .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor))
-        .map(|ray| ray.origin.truncate())
-    {
-        if mouse_button.just_pressed(MouseButton::Left) {
-            let clicked_pos = Position {
-                file: ((world_position.x + 4.0 * SQUARE_SIZE) / SQUARE_SIZE).floor() as u8 + 1,
-                rank: (8.0 - ((world_position.y + 4.0 * SQUARE_SIZE) / SQUARE_SIZE).floor()) as u8,
-            };
-
+    if buttons.just_pressed(MouseButton::Left) {
+        let window = windows.single();
+        if let Some(position) = get_board_position(window.cursor_position(), window) {
+            // If a piece is already selected
             if let Ok(selected_entity) = selected_pieces.get_single() {
                 if let Some((_, selected_piece, _)) = pieces.iter().find(|(entity, _, _)| *entity == selected_entity) {
+                    // Try to make a move
                     let valid_moves = game_state.board.get_valid_moves(selected_piece.position);
-                    if let Some(valid_move) = valid_moves.iter().find(|m| m.to == clicked_pos) {
-                        // Check if there's a piece at the target position (capture)
-                        if let Some((captured_entity, _, _)) = pieces.iter().find(|(_, p, _)| p.position == clicked_pos) {
-                            // Despawn the captured piece
-                            commands.entity(captured_entity).despawn();
-                        }
+                    if let Some(valid_move) = valid_moves.iter().find(|m| m.to == position) {
+                        // First check if there's a piece to capture at the destination
+                        let captured_entity = pieces.iter()
+                            .find(|(_, p, _)| p.position == valid_move.to)
+                            .map(|(e, _, _)| e);
 
-                        // Make the move
                         if game_state.board.make_move(*valid_move).is_ok() {
-                            // Update piece positions
-                            for (entity, piece, _) in pieces.iter() {
-                                if piece.position == valid_move.from {
-                                    commands.entity(entity).insert(MovingPiece {
-                                        target_position: board_position_to_world(valid_move.to, 2.0),
-                                        speed: 500.0,
-                                    });
-                                    commands.entity(entity).insert(Piece {
-                                        piece_type: piece.piece_type,
-                                        is_white: piece.is_white,
-                                        position: valid_move.to,
-                                    });
-                                }
+                            // Remove captured piece if any
+                            if let Some(entity) = captured_entity {
+                                commands.entity(entity).despawn();
                             }
 
-                            // Remove selection
+                            // Move the piece
+                            if let Some((entity, mut piece, mut transform)) = pieces.iter_mut().find(|(e, _, _)| *e == selected_entity) {
+                                move_piece(
+                                    &mut commands,
+                                    entity,
+                                    &mut piece,
+                                    &mut transform,
+                                    valid_move.from,
+                                    valid_move.to,
+                                    window,
+                                );
+                            }
+
+                            // Deselect the piece
                             commands.entity(selected_entity).remove::<SelectedPiece>();
-                            
+
                             // Switch to AI's turn
-                            next_turn.set(Turn::AI);
+                            turn_state.set(Turn::AI);
                             return;
                         }
                     }
                 }
-                
-                // If clicked on a different friendly piece, select it instead
+
+                // If clicked on another friendly piece, select it instead
                 if let Some((entity, piece, _)) = pieces.iter().find(|(_, p, _)| {
-                    p.position == clicked_pos && p.is_white
+                    p.position == position && p.is_white
                 }) {
                     commands.entity(selected_entity).remove::<SelectedPiece>();
                     commands.entity(entity).insert(SelectedPiece);
@@ -412,7 +407,7 @@ fn handle_input(
             } else {
                 // No piece selected - try to select a friendly piece
                 if let Some((entity, piece, _)) = pieces.iter().find(|(_, p, _)| {
-                    p.position == clicked_pos && p.is_white
+                    p.position == position && p.is_white
                 }) {
                     commands.entity(entity).insert(SelectedPiece);
                 }
@@ -434,24 +429,27 @@ fn update_selected_pieces(
 }
 
 fn update_ai(
-    time: Res<Time>,
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
+    time: Res<Time>,
     mut turn_state: ResMut<NextState<Turn>>,
     mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
     windows: Query<&Window>,
     turn: Res<State<Turn>>,
 ) {
+    // Only process during AI's turn
     if *turn.get() != Turn::AI {
         return;
     }
 
+    // Don't process if game is over
     if game_state.board.is_checkmate() || game_state.board.is_stalemate() {
         return;
     }
 
     game_state.ai_thinking_timer.tick(time.delta());
 
+    // Start AI computation if not already started
     if game_state.ai_task.is_none() && game_state.ai_thinking_timer.finished() {
         let board = game_state.board.clone();
         let ai = game_state.ai.clone();
@@ -462,24 +460,57 @@ fn update_ai(
         }));
     }
 
+    // Process AI move when ready
     if let Some(mut task) = game_state.ai_task.take() {
         if let Some(ai_move) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut task)) {
             if let Some(chess_move) = ai_move {
+                println!("AI attempting move: {:?}", chess_move);
+                
+                // First check if there's a piece to capture at the destination
+                let captured_entity = pieces.iter()
+                    .find(|(_, p, _)| p.position == chess_move.to)
+                    .map(|(e, _, _)| e);
+
+                // Make the move on the board first
                 if game_state.board.make_move(chess_move).is_ok() {
-                    // Check for and handle captures
-                    if let Some((captured_entity, _, _)) = pieces.iter().find(|(_, p, _)| p.position == chess_move.to) {
-                        // Despawn the captured piece
-                        commands.entity(captured_entity).despawn();
+                    println!("Move successful on board");
+                    
+                    // Remove captured piece if any
+                    if let Some(entity) = captured_entity {
+                        commands.entity(entity).despawn();
                     }
 
-                    // Move the piece
+                    // Find and move the AI piece
+                    let mut moved = false;
                     for (entity, mut piece, mut transform) in pieces.iter_mut() {
-                        if piece.position == chess_move.from {
-                            move_piece(&mut commands, entity, &mut piece, &mut transform, chess_move.from, chess_move.to, windows.single());
+                        if piece.position == chess_move.from && !piece.is_white {
+                            println!("Moving piece from {:?} to {:?}", chess_move.from, chess_move.to);
+                            
+                            // Update piece position
+                            piece.position = chess_move.to;
+                            
+                            // Calculate target position in world coordinates
+                            let target_pos = board_position_to_world(chess_move.to, transform.translation.z);
+                            
+                            // Add movement component
+                            commands.entity(entity).insert(MovingPiece {
+                                target_position: target_pos,
+                                speed: 500.0,
+                            });
+                            
+                            moved = true;
                             break;
                         }
                     }
-                    turn_state.set(Turn::Player);
+
+                    if moved {
+                        // Switch back to player's turn
+                        turn_state.set(Turn::Player);
+                    } else {
+                        println!("Error: Could not find AI piece to move");
+                    }
+                } else {
+                    println!("Invalid AI move attempted: {:?}", chess_move);
                 }
             }
             game_state.ai_thinking_timer.reset();
@@ -657,10 +688,34 @@ fn show_valid_moves(
     }
 }
 
+fn get_board_position(cursor_position: Option<Vec2>, window: &Window) -> Option<Position> {
+    cursor_position.map(|cursor| {
+        let window_size = Vec2::new(window.width(), window.height());
+        let board_size = 8.0 * SQUARE_SIZE;
+        
+        // Center the board in the window
+        let board_start = (window_size - Vec2::splat(board_size)) / 2.0;
+        
+        // Calculate relative position on board
+        let relative_pos = cursor - board_start;
+        
+        // Convert to file and rank (1-based)
+        let file = (relative_pos.x / SQUARE_SIZE).floor() as u8 + 1;
+        // Calculate rank from bottom (rank 1) to top (rank 8)
+        let rank = (8.0 - (relative_pos.y / SQUARE_SIZE).floor()) as u8;
+        
+        // Clamp values to valid range
+        let file = file.clamp(1, 8);
+        let rank = rank.clamp(1, 8);
+        
+        Position { file, rank }
+    })
+}
+
 fn board_position_to_world(pos: Position, z: f32) -> Vec3 {
     Vec3::new(
         ((pos.file as f32 - 1.0) - 3.5) * SQUARE_SIZE,
-        ((8.0 - pos.rank as f32) - 3.5) * SQUARE_SIZE,
+        ((pos.rank as f32 - 1.0) - 3.5) * SQUARE_SIZE,
         z,
     )
 }
@@ -675,10 +730,19 @@ fn update_piece_movement(
         let distance = (moving.target_position - transform.translation).length();
         
         if distance < 1.0 {
+            // Snap to final position when close enough
             transform.translation = moving.target_position;
             commands.entity(entity).remove::<MovingPiece>();
         } else {
-            transform.translation += direction * moving.speed * time.delta_seconds();
+            // Smooth movement
+            let movement = direction * moving.speed * time.delta_seconds();
+            // Prevent overshooting
+            if movement.length() > distance {
+                transform.translation = moving.target_position;
+                commands.entity(entity).remove::<MovingPiece>();
+            } else {
+                transform.translation += movement;
+            }
         }
     }
 }
@@ -692,17 +756,13 @@ fn move_piece(
     to: Position,
     window: &Window,
 ) {
+    // Update the piece's position immediately
     piece.position = to;
     
-    let board_size = 8.0 * SQUARE_SIZE;
-    let board_offset = Vec3::new(-board_size / 2.0, -board_size / 2.0, 0.0);
+    // Calculate the target position in world coordinates
+    let target_pos = board_position_to_world(to, 2.0);
 
-    let target_pos = Vec3::new(
-        board_offset.x + (to.file as f32 - 1.0) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
-        board_offset.y + (8.0 - to.rank as f32) * SQUARE_SIZE + SQUARE_SIZE / 2.0,
-        2.0,
-    );
-
+    // Add the MovingPiece component to handle smooth movement
     commands.entity(piece_entity).insert(MovingPiece {
         target_position: target_pos,
         speed: 500.0,

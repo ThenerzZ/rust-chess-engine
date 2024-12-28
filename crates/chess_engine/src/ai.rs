@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 const MAX_THINK_TIME: Duration = Duration::from_secs(5);
 const MIN_DEPTH: u8 = 4;
 const MAX_DEPTH: u8 = 8;
+const DEFAULT_MOVES_LEFT: u32 = 30; // Assume 30 moves left in an average position
 
 #[derive(Clone)]
 pub struct ChessAI {
@@ -20,20 +21,10 @@ impl ChessAI {
 
     pub fn get_move(&self, board: &Board) -> Option<Move> {
         let start_time = Instant::now();
-        let mut best_move = None;
+        let remaining_time = MAX_THINK_TIME.saturating_sub(start_time.elapsed());
         
-        // Iterative deepening
-        for current_depth in 1..=self.depth {
-            if start_time.elapsed() > MAX_THINK_TIME {
-                break;
-            }
-            
-            if let Some(mv) = search_best_move(board, current_depth) {
-                best_move = Some(mv);
-            }
-        }
-        
-        best_move
+        // Pass the configured depth to the search function
+        search_best_move(board, remaining_time, Some(DEFAULT_MOVES_LEFT))
     }
 }
 

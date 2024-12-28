@@ -1,19 +1,28 @@
 use crate::{Position, Piece, piece::{PieceType, Color}, Board};
 
 #[derive(Debug, Clone, Copy)]
+pub struct Move {
+    pub from: Position,
+    pub to: Position,
+    pub move_type: MoveType,
+    pub promotion: Option<PieceType>,
+}
+
+impl PartialEq for Move {
+    fn eq(&self, other: &Self) -> bool {
+        self.from == other.from && 
+        self.to == other.to && 
+        self.move_type == other.move_type && 
+        self.promotion == other.promotion
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MoveType {
     Normal,
     Capture,
     EnPassant,
     Castle,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Move {
-    pub from: Position,
-    pub to: Position,
-    pub promotion: Option<PieceType>,
-    pub move_type: MoveType,
 }
 
 impl Move {
