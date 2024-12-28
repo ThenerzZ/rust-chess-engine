@@ -2,6 +2,13 @@
 
 A high-performance chess engine written in Rust, featuring advanced search algorithms, sophisticated evaluation, and a modern Bevy-based UI.
 
+## Latest Release
+🎉 **Version 1.0.0 is now available!** 
+- [Download v1.0.0 for Windows](releases/v1.0.0/chess-engine-v1.0.0-windows.zip)
+- [Release Notes](releases/v1.0.0/README.md)
+
+⚠️ Note: Linux and MacOS are not officially supported in this release.
+
 ## Features
 
 ### Core Engine
@@ -65,6 +72,7 @@ chess-engine/
 │   ├── algorithms/      # Search and evaluation algorithms
 │   ├── engine/          # Engine architecture
 │   └── assets/          # Asset documentation
+├── releases/            # Release packages and notes
 ├── assets/             # Game assets
 └── tests/              # Integration tests
 ```
