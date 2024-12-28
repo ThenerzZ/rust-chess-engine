@@ -1,29 +1,31 @@
+// Standard imports for time management, chess logic, and parallel processing
 use std::time::{Instant, Duration};
 use chess_core::{Board, Move, Position, piece::PieceType, moves::MoveType};
 use crate::evaluation::evaluate_position;
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, atomic::{AtomicBool, Ordering}};
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 
-// Time management constants
-const MIN_TIME_PER_MOVE: Duration = Duration::from_millis(100);
-const MAX_TIME_PER_MOVE: Duration = Duration::from_secs(15);
-const TIME_BUFFER: Duration = Duration::from_millis(50);
-const MOVES_TO_GO: u32 = 40;
-const MAX_DEPTH: u8 = 15;
-const MIN_DEPTH: u8 = 4;
+// Time management settings - how long the AI can think about moves
+const MIN_TIME_PER_MOVE: Duration = Duration::from_millis(100);  // Don't move too quickly
+const MAX_TIME_PER_MOVE: Duration = Duration::from_secs(15);     // Don't think forever
+const TIME_BUFFER: Duration = Duration::from_millis(50);         // Safety margin for time management
+const MOVES_TO_GO: u32 = 40;                                     // Assume this many moves left in the game
+const MAX_DEPTH: u8 = 15;                                        // Maximum search depth
+const MIN_DEPTH: u8 = 4;                                         // Always search at least this deep
 
-// Search termination flag
+// Flag to stop searching when we run out of time
 static SEARCH_TERMINATED: AtomicBool = AtomicBool::new(false);
 
-// Time management structure
+// Manages how long we can spend thinking about a move
 struct TimeManager {
-    start_time: Instant,
-    allocated_time: Duration,
+    start_time: Instant,      // When we started thinking
+    allocated_time: Duration, // How long we can think
 }
 
 impl TimeManager {
+    // Creates a new time manager based on total time left and estimated moves to go
     fn new(total_time: Duration, moves_left: Option<u32>) -> Self {
         let moves_to_go = moves_left.unwrap_or(MOVES_TO_GO);
         let base_time = total_time.div_f32(moves_to_go as f32);
@@ -35,78 +37,80 @@ impl TimeManager {
         }
     }
 
+    // Checks if we still have time to continue searching
     fn should_continue(&self) -> bool {
         let elapsed = self.start_time.elapsed();
         elapsed + TIME_BUFFER < self.allocated_time
     }
 
+    // Returns how long we've been thinking
     fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
 }
 
-// Search parameters
-const MATE_SCORE: i32 = 20000;
-const ALPHA_INIT: i32 = -19000;
-const BETA_INIT: i32 = 19000;
-const QUIESCENCE_DEPTH: u8 = 4;
-const MAX_MOVES_TO_CONSIDER: usize = 35;
-const MAX_TT_SIZE: usize = 1_000_000;
+// Core search algorithm parameters
+const MATE_SCORE: i32 = 20000;                    // Value representing checkmate
+const ALPHA_INIT: i32 = -19000;                   // Initial alpha for search window
+const BETA_INIT: i32 = 19000;                     // Initial beta for search window
+const QUIESCENCE_DEPTH: u8 = 4;                   // How deep to search captures
+const MAX_MOVES_TO_CONSIDER: usize = 35;          // Limit number of moves to analyze
+const MAX_TT_SIZE: usize = 1_000_000;            // Size of transposition table
 
-// More balanced pruning
-const FUTILITY_MARGIN: [i32; 4] = [0, 100, 200, 300];
-const DELTA_MARGIN: i32 = 150;
-const NULL_MOVE_R: u8 = 3;
-const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 800;
-const LMR_DEPTH_THRESHOLD: u8 = 3;
-const LMR_MOVE_THRESHOLD: usize = 3;
+// Pruning parameters to make search more efficient
+const FUTILITY_MARGIN: [i32; 4] = [0, 100, 200, 300];  // Margins for futility pruning at different depths
+const DELTA_MARGIN: i32 = 150;                         // Margin for delta pruning in quiescence search
+const NULL_MOVE_R: u8 = 3;                            // Reduction for null move pruning
+const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 800;        // Minimum material for null move pruning
+const LMR_DEPTH_THRESHOLD: u8 = 3;                    // Minimum depth for late move reduction
+const LMR_MOVE_THRESHOLD: usize = 3;                  // Number of moves before late move reduction
 
-// Move generation
-const MAX_TACTICAL_MOVES: usize = 8;
-const HISTORY_MAX: i32 = 8000;
+// Move generation and history heuristic parameters
+const MAX_TACTICAL_MOVES: usize = 8;                  // Maximum number of tactical moves to consider
+const HISTORY_MAX: i32 = 8000;                       // Maximum history score before scaling
 
-// Transposition table entry types
+// Move ordering scores - helps search better moves first
+const CAPTURE_SCORE_BASE: i32 = 10000;               // Base score for captures
+const PROMOTION_SCORE_BASE: i32 = 9000;              // Base score for pawn promotions
+const HISTORY_SCORE_MAX: i32 = 6000;                 // Maximum score for history heuristic
+
+// Types of entries in our transposition table
 #[derive(Clone, Copy)]
 enum EntryType {
-    Exact,
-    LowerBound,
-    UpperBound,
+    Exact,      // The stored score is exact
+    LowerBound, // The real score might be higher
+    UpperBound, // The real score might be lower
 }
 
-// Transposition table entry
+// Entry in our transposition table - caches results of previous searches
 #[derive(Clone)]
 struct TTEntry {
-    depth: u8,
-    score: i32,
-    entry_type: EntryType,
-    best_move: Option<Move>,
+    depth: u8,              // How deep we searched
+    score: i32,             // Score we found
+    entry_type: EntryType,  // How reliable this score is
+    best_move: Option<Move>, // Best move found at this position
 }
 
-// Global transposition table
+// Global cache of positions we've already analyzed
 static TRANSPOSITION_TABLE: Lazy<Mutex<HashMap<String, TTEntry>>> = 
     Lazy::new(|| Mutex::new(HashMap::with_capacity(MAX_TT_SIZE)));
 
-// History table for move ordering
+// Table that remembers which moves were good in similar positions
 static HISTORY_TABLE: Lazy<Mutex<Vec<Vec<i32>>>> = 
     Lazy::new(|| Mutex::new(vec![vec![0; 64]; 64]));
 
-// Add at the top with other constants
-const MAX_PV_LENGTH: usize = 64;
+// Principal Variation (PV) - the best line of play we've found
+const MAX_PV_LENGTH: usize = 64;  // Maximum length of the principal variation
 static PV_TABLE: Lazy<Mutex<Vec<Move>>> = Lazy::new(|| Mutex::new(Vec::with_capacity(MAX_PV_LENGTH)));
+
+// Killer moves - good moves that caused beta cutoffs at the same depth
 static KILLER_MOVES: Lazy<Mutex<Vec<Option<[Move; 2]>>>> = Lazy::new(|| Mutex::new(vec![None; MAX_PV_LENGTH]));
 
-// Move ordering scores (inspired by Stockfish)
-const CAPTURE_SCORE_BASE: i32 = 10000;
-const PROMOTION_SCORE_BASE: i32 = 9000;
-const KILLER_SCORE: i32 = 8000;
-const COUNTER_MOVE_SCORE: i32 = 7000;
-const HISTORY_SCORE_MAX: i32 = 6000;
+// Parameters for Principal Variation Search (PVS)
+const FULL_DEPTH_MOVES: usize = 4;  // Search this many moves with full window
+const REDUCTION_LIMIT: u8 = 3;      // Don't reduce moves until this depth
 
-// PVS search parameters
-const FULL_DEPTH_MOVES: usize = 4;  // Number of moves to search with full window
-const REDUCTION_LIMIT: u8 = 3;      // Minimum depth for reductions
-
-// Helper function to create a default move
+// Creates a dummy move for initialization purposes
 fn create_default_move() -> Move {
     Move {
         from: Position { rank: 0, file: 0 },
@@ -116,10 +120,13 @@ fn create_default_move() -> Move {
     }
 }
 
+// Main function that finds the best move in a given position
 pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<u32>) -> Option<Move> {
+    // Set up time management and initialize search
     let time_manager = TimeManager::new(total_time, moves_left);
     SEARCH_TERMINATED.store(false, Ordering::SeqCst);
 
+    // Clean up transposition table if it's getting too big
     let mut tt = TRANSPOSITION_TABLE.lock().unwrap();
     if tt.len() > MAX_TT_SIZE {
         tt.clear();
@@ -127,11 +134,13 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
     let mut history = HISTORY_TABLE.lock().unwrap();
     let mut pv_table = PV_TABLE.lock().unwrap();
     
+    // Reset principal variation and prepare for new search
     pv_table.clear();
     let mut best_move = None;
     let mut best_score = ALPHA_INIT;
     let mut current_depth = 1;
 
+    // Get all possible moves, ordered by likely quality
     let moves = generate_ordered_moves(
         board, 
         &*history,
@@ -139,45 +148,48 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
         None  // No TT move for initial position
     );
 
-    // Early exit for single legal move
+    // Quick wins - if there's only one move or an obviously good capture
     if moves.len() == 1 {
         return Some(moves[0]);
     }
-
-    // Early move for obvious captures
     if let Some(obvious_move) = find_obvious_move(board, &moves) {
         if is_clearly_winning_capture(board, obvious_move) {
             return Some(obvious_move);
         }
     }
 
-    // Parallel iterative deepening with aspiration windows
+    // Main iterative deepening loop - search deeper and deeper until we run out of time
     while current_depth <= MAX_DEPTH && (current_depth <= MIN_DEPTH || time_manager.should_continue()) {
         println!("Starting search at depth {}", current_depth);
-        let mut alpha = if current_depth == 1 { -MATE_SCORE } else { best_score - 75 };
+        
+        // Set up aspiration windows - assume the score won't change too much from last iteration
+        let alpha = if current_depth == 1 { -MATE_SCORE } else { best_score - 75 };
         let beta = if current_depth == 1 { MATE_SCORE } else { best_score + 75 };
-        let mut window = 50;
 
-        // Process moves in parallel
+        // Split moves among available CPU cores for parallel search
         let chunk_size = (moves.len() + 3) / 4;
         let move_chunks: Vec<Vec<Move>> = moves.chunks(chunk_size)
             .map(|chunk| chunk.to_vec())
             .collect();
 
+        // Search each chunk of moves in parallel
         let scores: Vec<(Option<Move>, i32)> = move_chunks.par_iter()
             .map(|chunk_moves| {
                 let mut local_best_move = None;
                 let mut local_best_score = ALPHA_INIT;
 
+                // Try each move in this chunk
                 for &chess_move in chunk_moves {
+                    // Stop if we're out of time
                     if !time_manager.should_continue() {
                         SEARCH_TERMINATED.store(true, Ordering::SeqCst);
                         break;
                     }
 
+                    // Make the move and search resulting position
                     let mut new_board = board.clone();
                     if new_board.make_move(chess_move).is_ok() {
-                        let mut score = -principal_variation_search(
+                        let score = -principal_variation_search(
                             &new_board,
                             current_depth - 1,
                             -beta,
@@ -188,6 +200,7 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
                             true,
                         );
 
+                        // Update local best if this move is better
                         if score > local_best_score {
                             local_best_score = score;
                             local_best_move = Some(chess_move);
@@ -198,12 +211,12 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
             })
             .collect();
 
-        // Early exit if search was terminated
+        // Stop searching if we ran out of time
         if SEARCH_TERMINATED.load(Ordering::SeqCst) {
             break;
         }
 
-        // Update best move
+        // Find the best move among all parallel results
         for (move_option, score) in scores {
             if score > best_score {
                 best_score = score;
@@ -211,10 +224,9 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
             }
         }
 
-        // Adjust window for next iteration
-        window = (window * 3) / 2;
         current_depth += 1;
 
+        // Log progress
         println!("Depth {} completed in {:?}, best move: {:?}, score: {}", 
             current_depth - 1, 
             time_manager.elapsed(),
@@ -222,7 +234,7 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
             best_score
         );
 
-        // Early exit if we found a winning move
+        // Stop early if we found a winning move
         if best_score > MATE_SCORE - 1000 {
             break;
         }
@@ -231,7 +243,7 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
     best_move
 }
 
-// Find obvious moves like capturing a piece with no counter-play
+// Looks for simple winning captures that we can make immediately
 fn find_obvious_move(board: &Board, moves: &[Move]) -> Option<Move> {
     for &mv in moves {
         if let Some(victim) = board.get_piece(mv.to) {
@@ -240,7 +252,7 @@ fn find_obvious_move(board: &Board, moves: &[Move]) -> Option<Move> {
             if get_piece_value(victim.piece_type) > get_piece_value(attacker.piece_type) {
                 let mut new_board = board.clone();
                 if new_board.make_move(mv).is_ok() {
-                    // Check if the capture is safe
+                    // Make sure it's not a trap where we lose the piece
                     if !is_piece_hanging(&new_board, mv.to) {
                         return Some(mv);
                     }
@@ -251,6 +263,7 @@ fn find_obvious_move(board: &Board, moves: &[Move]) -> Option<Move> {
     None
 }
 
+// The main recursive search function that implements Principal Variation Search (PVS)
 fn principal_variation_search(
     board: &Board,
     depth: u8,
@@ -261,6 +274,7 @@ fn principal_variation_search(
     pv_table: &mut Vec<Move>,
     is_pv_node: bool,
 ) -> i32 {
+    // Early exits
     if SEARCH_TERMINATED.load(Ordering::SeqCst) {
         return evaluate_position(board);
     }
@@ -269,13 +283,14 @@ fn principal_variation_search(
         return quiescence_search(board, alpha, beta, QUIESCENCE_DEPTH);
     }
 
+    // Try to use cached result if we have one
     let pos_key = get_position_key(board);
     let original_alpha = alpha;
     let mut best_move = None;
     let mut best_score = ALPHA_INIT;
     let mut current_alpha = alpha;
 
-    // TT lookup
+    // Check transposition table
     if let Some(entry) = tt.get(&pos_key) {
         if entry.depth >= depth && !is_pv_node {
             let score = adjust_mate_score(entry.score, depth);
@@ -295,11 +310,11 @@ fn principal_variation_search(
         best_move = entry.best_move;
     }
 
-    // Static evaluation and pruning
+    // Quick position evaluation and pruning checks
     let static_eval = evaluate_position(board);
     let in_check = is_endgame_or_in_check(board);
 
-    // Reverse futility pruning
+    // Skip searching if the position is already too good
     if !is_pv_node && !in_check && depth <= 3 {
         let margin = FUTILITY_MARGIN[depth as usize];
         if static_eval - margin >= beta {
@@ -307,7 +322,7 @@ fn principal_variation_search(
         }
     }
 
-    // Null move pruning
+    // Try null move pruning - let opponent make two moves in a row
     if !is_pv_node && depth >= 3 && !in_check && static_eval >= beta {
         let r = if depth >= 6 { NULL_MOVE_R + 1 } else { NULL_MOVE_R };
         let score = -principal_variation_search(
@@ -325,11 +340,12 @@ fn principal_variation_search(
         }
     }
 
+    // Get and try all possible moves
     let mut moves = generate_ordered_moves(board, history, pv_table, best_move);
     let mut searched_moves = 0;
     let mut has_legal_moves = false;
 
-    // PV search
+    // Try each move
     for mv in moves {
         let mut new_board = board.clone();
         if new_board.make_move(mv).is_ok() {
@@ -337,7 +353,7 @@ fn principal_variation_search(
             searched_moves += 1;
 
             let score = if searched_moves == 1 {
-                // First move with full window
+                // Search first move with full window
                 -principal_variation_search(
                     &new_board,
                     depth - 1,
@@ -349,14 +365,14 @@ fn principal_variation_search(
                     is_pv_node,
                 )
             } else {
-                // Late Move Reductions
+                // Try late move reductions for other moves
                 let reduction = if depth >= REDUCTION_LIMIT && searched_moves > FULL_DEPTH_MOVES {
                     ((searched_moves as f32).ln().floor() as u8).min(depth - 1)
                 } else {
                     0
                 };
 
-                // Search with null window
+                // First try a shallow search
                 let mut score = -principal_variation_search(
                     &new_board,
                     depth - 1 - reduction,
@@ -368,7 +384,7 @@ fn principal_variation_search(
                     false,
                 );
 
-                // Re-search if score is between alpha and beta
+                // If the shallow search looks promising, do a full search
                 if score > current_alpha && score < beta {
                     score = -principal_variation_search(
                         &new_board,
@@ -384,13 +400,14 @@ fn principal_variation_search(
                 score
             };
 
+            // Update best move if we found a better one
             if score > best_score {
                 best_score = score;
                 best_move = Some(mv);
                 if score > current_alpha {
                     current_alpha = score;
                     
-                    // Update PV table
+                    // Update principal variation
                     if is_pv_node {
                         pv_table.clear();
                         pv_table.push(mv);
@@ -398,7 +415,7 @@ fn principal_variation_search(
                 }
             }
 
-            // Beta cutoff
+            // Beta cutoff - position is too good, opponent won't allow it
             if current_alpha >= beta {
                 if !is_capture(board, mv) {
                     update_history(history, mv, depth);
@@ -408,12 +425,12 @@ fn principal_variation_search(
         }
     }
 
-    // Handle checkmate and stalemate
+    // Handle special cases
     if !has_legal_moves {
         return if in_check { -MATE_SCORE + depth as i32 } else { 0 };
     }
 
-    // Store position in transposition table
+    // Save position to transposition table
     let entry_type = if best_score <= original_alpha {
         EntryType::UpperBound
     } else if best_score >= beta {
@@ -432,8 +449,10 @@ fn principal_variation_search(
     best_score
 }
 
+// Creates a unique string key for a board position
 fn get_position_key(board: &Board) -> String {
     let mut key = String::with_capacity(100);
+    // Add each piece's position and type to the key
     for rank in 1..=8 {
         for file in 1..=8 {
             let pos = chess_core::Position { rank, file };
@@ -443,76 +462,80 @@ fn get_position_key(board: &Board) -> String {
             }
         }
     }
+    // Add whose turn it is
     key.push_str(&format!("turn:{:?}", board.current_turn()));
     key
 }
 
+// Search captures to make sure we don't miss any tactical opportunities
 fn quiescence_search(board: &Board, mut alpha: i32, beta: i32, depth: u8) -> i32 {
-    // Check if search should be terminated
+    // Check if we need to stop searching
     if SEARCH_TERMINATED.load(Ordering::SeqCst) {
         return evaluate_position(board);
     }
 
-    // Quick evaluation of the current position
+    // Get a quick evaluation of the current position
     let stand_pat = evaluate_position(board);
     
-    // Early exit conditions
+    // Stop searching if we're too deep or the game is over
     if depth == 0 || board.is_checkmate() || board.is_stalemate() {
         return stand_pat;
     }
 
-    // Stand pat pruning
+    // Position is already too good - opponent won't allow it
     if stand_pat >= beta {
         return beta;
     }
 
-    // Delta pruning - if even the best possible capture can't improve alpha
+    // Don't search further if even the best capture can't improve our position
     if stand_pat < alpha - DELTA_MARGIN {
         return alpha;
     }
 
+    // Current position is better than what we've found so far
     alpha = alpha.max(stand_pat);
 
-    // Generate and sort captures
+    // Look at all possible captures
     let mut captures = generate_captures(board);
     if captures.is_empty() {
         return stand_pat;
     }
     
-    // Sort captures by MVV-LVA and SEE
+    // Sort captures by how good they look
     captures.sort_by_cached_key(|m| {
         let see_score = static_exchange_evaluation(board, *m);
         let mvv_lva = get_mvv_lva_score(board, *m);
         -(see_score * 1000 + mvv_lva)
     });
     
-    // Only look at promising captures
+    // Only look at captures that don't lose too much material
     captures.retain(|m| {
         let see_score = static_exchange_evaluation(board, *m);
         see_score >= -50 // Only slightly losing captures might be worth checking
     });
 
-    let mut searched_moves = 0;
+    // Try each capture
     for capture in captures {
-        // Periodically check if search should be terminated
-        if searched_moves % 8 == 0 && SEARCH_TERMINATED.load(Ordering::SeqCst) {
+        // Stop if we're out of time
+        if SEARCH_TERMINATED.load(Ordering::SeqCst) {
             return alpha;
         }
 
-        searched_moves += 1;
+        // Make the capture and evaluate the resulting position
         let mut new_board = board.clone();
         if new_board.make_move(capture).is_ok() {
             let score = -quiescence_search(&new_board, -beta, -alpha, depth - 1);
-            if score >= beta {
-                return beta;
-            }
             alpha = alpha.max(score);
+            if alpha >= beta {
+                break;
+            }
         }
     }
 
     alpha
 }
 
+// Generates a list of moves sorted by how good they're likely to be
 fn generate_ordered_moves(
     board: &Board,
     history: &Vec<Vec<i32>>,
@@ -524,7 +547,7 @@ fn generate_ordered_moves(
     
     let current_color = board.current_turn();
     
-    // First try TT move if available
+    // Try the transposition table move first if we have one
     if let Some(tt_mv) = tt_move {
         if board.get_piece(tt_mv.from).map_or(false, |p| p.color == current_color) {
             moves.push(tt_mv);
@@ -532,7 +555,7 @@ fn generate_ordered_moves(
         }
     }
 
-    // Generate all legal moves
+    // Generate and score all legal moves
     for rank in 1..=8 {
         for file in 1..=8 {
             let pos = Position { rank, file };
@@ -544,11 +567,12 @@ fn generate_ordered_moves(
                             continue;
                         }
 
+                        // Score the move based on its type
                         let score = if let Some(victim) = board.get_piece(mv.to) {
-                            // MVV-LVA scoring for captures
+                            // Captures get high priority
                             CAPTURE_SCORE_BASE + get_mvv_lva_score(board, mv)
                         } else if let Some(promotion) = mv.promotion {
-                            // Scoring for promotions
+                            // Promotions are also very important
                             PROMOTION_SCORE_BASE + match promotion {
                                 PieceType::Queen => 500,
                                 PieceType::Rook => 400,
@@ -556,7 +580,7 @@ fn generate_ordered_moves(
                                 _ => 0,
                             }
                         } else {
-                            // History heuristic for quiet moves
+                            // Use history heuristic for quiet moves
                             let from_idx = ((mv.from.rank - 1) * 8 + (mv.from.file - 1)) as usize;
                             let to_idx = ((mv.to.rank - 1) * 8 + (mv.to.file - 1)) as usize;
                             history[from_idx][to_idx].min(HISTORY_SCORE_MAX)
@@ -570,14 +594,15 @@ fn generate_ordered_moves(
         }
     }
 
-    // Sort moves by score
+    // Sort moves by their scores
     let mut move_indices: Vec<usize> = (0..moves.len()).collect();
     move_indices.sort_unstable_by_key(|&i| -move_scores[i]);
     
-    // Return sorted moves
+    // Return moves in sorted order
     move_indices.into_iter().map(|i| moves[i]).collect()
 }
 
+// Finds all possible captures in the current position
 fn generate_captures(board: &Board) -> Vec<Move> {
     let mut captures = Vec::new();
     for rank in 1..=8 {
@@ -598,7 +623,7 @@ fn generate_captures(board: &Board) -> Vec<Move> {
     captures
 }
 
-// Most Valuable Victim - Least Valuable Attacker (MVV-LVA) scoring
+// Scores captures based on Most Valuable Victim - Least Valuable Attacker principle
 fn get_mvv_lva_score(board: &Board, mv: Move) -> i32 {
     let victim = board.get_piece(mv.to);
     let attacker = board.get_piece(mv.from);
@@ -607,16 +632,17 @@ fn get_mvv_lva_score(board: &Board, mv: Move) -> i32 {
         let victim_value = get_piece_static_value(victim.piece_type);
         let attacker_value = get_piece_static_value(attacker.piece_type);
         
-        // Consider piece mobility in the scoring
+        // Add bonus for moves that improve piece mobility
         let mobility_bonus = board.get_valid_moves(mv.to).len() as i32 * 5;
         
-        // Prioritize captures that improve piece mobility
+        // Prefer capturing high value pieces with low value pieces
         victim_value * 100 - attacker_value * 10 + mobility_bonus
     } else {
         0
     }
 }
 
+// Basic piece values for simple evaluations
 fn get_piece_value(piece_type: PieceType) -> i32 {
     match piece_type {
         PieceType::Pawn => 1,
@@ -624,18 +650,18 @@ fn get_piece_value(piece_type: PieceType) -> i32 {
         PieceType::Bishop => 3,
         PieceType::Rook => 5,
         PieceType::Queen => 9,
-        PieceType::King => 0,
+        PieceType::King => 0,  // King's value doesn't matter for captures
     }
 }
 
-// Helper function to determine if position is in endgame or in check
+// Checks if we're in endgame or if the king is under attack
 fn is_endgame_or_in_check(board: &Board) -> bool {
     let mut queens = 0;
     let mut pieces = 0;
     let current_color = board.current_turn();
     let mut king_attacked = false;
 
-    // Count material and check if king is attacked
+    // Count material and look for king attacks
     for rank in 1..=8 {
         for file in 1..=8 {
             let pos = chess_core::Position { rank, file };
@@ -644,7 +670,7 @@ fn is_endgame_or_in_check(board: &Board) -> bool {
                     PieceType::Queen => queens += 1,
                     PieceType::Rook | PieceType::Bishop | PieceType::Knight => pieces += 1,
                     PieceType::King if piece.color == current_color => {
-                        // Check if any opponent piece can attack the king
+                        // Look for any enemy pieces that can attack our king
                         for r in 1..=8 {
                             for f in 1..=8 {
                                 let attack_pos = chess_core::Position { rank: r, file: f };
@@ -669,18 +695,19 @@ fn is_endgame_or_in_check(board: &Board) -> bool {
         }
     }
 
-    // Consider it endgame if no queens or few pieces remain
+    // We're in endgame if there are few pieces left
     let is_endgame = queens == 0 || (queens == 2 && pieces <= 2);
     is_endgame || king_attacked
 } 
 
+// Updates the history table when a move causes a beta cutoff
 fn update_history(history: &mut Vec<Vec<i32>>, mv: Move, bonus: u8) {
     let from_idx = ((mv.from.rank - 1) * 8 + (mv.from.file - 1)) as usize;
     let to_idx = ((mv.to.rank - 1) * 8 + (mv.to.file - 1)) as usize;
     
     history[from_idx][to_idx] += bonus as i32;
     
-    // Prevent overflow by scaling down if necessary
+    // Scale down all history scores if they get too large
     if history[from_idx][to_idx] > HISTORY_MAX {
         for row in history.iter_mut() {
             for cell in row.iter_mut() {
@@ -690,20 +717,23 @@ fn update_history(history: &mut Vec<Vec<i32>>, mv: Move, bonus: u8) {
     }
 }
 
+// Gets the history score for a move
 fn get_history_score(history: &Vec<Vec<i32>>, mv: Move) -> i32 {
     let from_idx = ((mv.from.rank - 1) * 8 + (mv.from.file - 1)) as usize;
     let to_idx = ((mv.to.rank - 1) * 8 + (mv.to.file - 1)) as usize;
     history[from_idx][to_idx]
 }
 
+// Checks if a move is a capture
 fn is_capture(board: &Board, mv: Move) -> bool {
     board.get_piece(mv.to).is_some()
 }
 
+// Checks if a move gives check to the opponent
 fn gives_check(board: &Board) -> bool {
     let current_color = board.current_turn();
     
-    // Find opponent's king
+    // Find the opponent's king
     let mut king_pos = None;
     'outer: for rank in 1..=8 {
         for file in 1..=8 {
@@ -717,8 +747,8 @@ fn gives_check(board: &Board) -> bool {
         }
     }
 
+    // See if any of our pieces can attack the king
     if let Some(king_pos) = king_pos {
-        // Check if any piece can attack the king
         for rank in 1..=8 {
             for file in 1..=8 {
                 let pos = chess_core::Position { rank, file };
@@ -737,7 +767,7 @@ fn gives_check(board: &Board) -> bool {
     false
 } 
 
-// Static Exchange Evaluation (SEE)
+// Evaluates a capture sequence to see if it's good for us
 fn static_exchange_evaluation(board: &Board, mv: Move) -> i32 {
     let victim = board.get_piece(mv.to);
     let attacker = board.get_piece(mv.from);
@@ -746,25 +776,26 @@ fn static_exchange_evaluation(board: &Board, mv: Move) -> i32 {
         let victim_value = get_piece_static_value(victim.piece_type);
         let attacker_value = get_piece_static_value(attacker.piece_type);
         
-        // Simple SEE - just consider the immediate capture
+        // Simple evaluation - just look at material difference
         victim_value - attacker_value
     } else {
         0
     }
 }
 
+// More precise piece values for static evaluation
 fn get_piece_static_value(piece_type: PieceType) -> i32 {
     match piece_type {
-        PieceType::Pawn => 100,
-        PieceType::Knight => 325,
-        PieceType::Bishop => 325,
-        PieceType::Rook => 500,
-        PieceType::Queen => 900,
-        PieceType::King => 20000,
+        PieceType::Pawn => 100,    // Base pawn value
+        PieceType::Knight => 325,  // Slightly higher than bishop in closed positions
+        PieceType::Bishop => 325,  // Equal to knight but better in open positions
+        PieceType::Rook => 500,    // Worth about 5 pawns
+        PieceType::Queen => 900,   // Most valuable piece after king
+        PieceType::King => 20000,  // Effectively infinite value
     }
 } 
 
-// Helper function to detect tactical positions
+// Checks if a position requires careful tactical play
 fn is_tactical_position(board: &Board) -> bool {
     // Position is tactical if:
     // 1. There are hanging pieces
@@ -801,12 +832,12 @@ fn is_tactical_position(board: &Board) -> bool {
     has_queen && capture_count > 0
 }
 
-// Helper function to check if a piece is hanging (can be captured without retaliation)
+// Checks if a piece can be captured without losing material
 fn is_piece_hanging(board: &Board, pos: chess_core::Position) -> bool {
     if let Some(piece) = board.get_piece(pos) {
         let piece_value = get_piece_value(piece.piece_type);
         
-        // Find lowest value attacker
+        // Find the lowest value attacker
         let mut min_attacker_value = i32::MAX;
         for rank in 1..=8 {
             for file in 1..=8 {
@@ -830,7 +861,7 @@ fn is_piece_hanging(board: &Board, pos: chess_core::Position) -> bool {
     false
 }
 
-// Helper function to get total material count
+// Calculates total material value on the board
 fn get_material_count(board: &Board) -> i32 {
     let mut total = 0;
     for rank in 1..=8 {
@@ -844,77 +875,31 @@ fn get_material_count(board: &Board) -> i32 {
     total
 }
 
-// Helper function to check if the game is in endgame phase
-fn is_endgame_phase(board: &Board) -> bool {
-    // Position is in endgame phase if:
-    // 1. There are no queens or few pieces remain
-    // 2. There are no pieces that can attack the king
-    let mut queens = 0;
-    let mut pieces = 0;
-    let current_color = board.current_turn();
-    let mut king_attacked = false;
-
-    // Count material and check if king is attacked
-    for rank in 1..=8 {
-        for file in 1..=8 {
-            let pos = chess_core::Position { rank, file };
-            if let Some(piece) = board.get_piece(pos) {
-                match piece.piece_type {
-                    PieceType::Queen => queens += 1,
-                    PieceType::Rook | PieceType::Bishop | PieceType::Knight => pieces += 1,
-                    PieceType::King if piece.color == current_color => {
-                        // Check if any opponent piece can attack the king
-                        for r in 1..=8 {
-                            for f in 1..=8 {
-                                let attack_pos = chess_core::Position { rank: r, file: f };
-                                if let Some(attacker) = board.get_piece(attack_pos) {
-                                    if attacker.color != current_color {
-                                        let moves = board.get_valid_moves(attack_pos);
-                                        if moves.iter().any(|m| m.to == pos) {
-                                            king_attacked = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if king_attacked {
-                                break;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Consider it endgame if no queens or few pieces remain
-    let is_endgame = queens == 0 || (queens == 2 && pieces <= 2);
-    is_endgame || king_attacked
-} 
-
-// Adjust mate scores by depth to prefer shorter paths to mate
+// Adjusts mate scores based on distance to mate
 fn adjust_mate_score(score: i32, depth: u8) -> i32 {
     if score > MATE_SCORE - 1000 {
+        // We found a mate - prefer shorter mates
         score - depth as i32
     } else if score < -MATE_SCORE + 1000 {
+        // We're getting mated - prefer longer mates
         score + depth as i32
     } else {
         score
     }
 } 
 
-// Update killer moves after a beta cutoff
+// Updates the killer move table after a good quiet move
 fn update_killer_moves(killer_moves: &mut Option<[Move; 2]>, mv: Move) {
     let moves = killer_moves.get_or_insert([create_default_move(); 2]);
     
+    // Keep track of the two most recent killer moves
     if moves[0].from != mv.from || moves[0].to != mv.to {
         moves[1] = moves[0];
         moves[0] = mv;
     }
 } 
 
-// Helper function to determine if a capture is clearly winning
+// Checks if a capture is clearly winning material
 fn is_clearly_winning_capture(board: &Board, mv: Move) -> bool {
     if let Some(victim) = board.get_piece(mv.to) {
         if let Some(attacker) = board.get_piece(mv.from) {

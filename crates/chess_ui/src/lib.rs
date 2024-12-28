@@ -6,10 +6,9 @@ use bevy::{
 };
 use chess_core::{
     Board, Position, Move,
-    piece::{Color as ChessColor, PieceType as ChessPieceType},
+    piece::PieceType as ChessPieceType,
 };
 use chess_engine::ChessAI;
-use std::{collections::HashMap, time::Duration};
 
 const SQUARE_SIZE: f32 = 80.0;
 
@@ -34,7 +33,7 @@ impl Default for GameState {
     fn default() -> Self {
         Self {
             board: Board::new(),
-            ai: ChessAI::new(5),
+            ai: ChessAI::new(4),
             ai_thinking_timer: Timer::from_seconds(0.5, TimerMode::Once),
             ai_task: None,
         }
@@ -58,6 +57,7 @@ pub struct ChessAssets {
     valid_move: Handle<Image>,
 }
 
+// Components
 #[derive(Component)]
 struct ChessBoard;
 
@@ -66,7 +66,7 @@ struct Square {
     position: Position,
 }
 
-#[derive(Component)]
+#[derive(Component, Copy, Clone)]
 struct Piece {
     piece_type: ChessPieceType,
     is_white: bool,
@@ -127,6 +127,7 @@ impl Plugin for ChessUiPlugin {
     }
 }
 
+// System functions
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -206,10 +207,11 @@ fn setup(
     }
 
     // Initial pieces
+    let mut commands = commands;
     spawn_initial_pieces(&mut commands, board_offset, &chess_assets);
     
     // UI
-    spawn_ui(commands);
+    spawn_ui(&mut commands);
 }
 
 fn spawn_initial_pieces(
@@ -292,13 +294,10 @@ fn spawn_piece(
 }
 
 fn handle_resize(
-    windows: Query<&Window>,
     mut board_query: Query<(&mut Transform, &mut Sprite), With<ChessBoard>>,
     mut square_query: Query<(&mut Transform, &mut Sprite, &Square), (With<Square>, Without<ChessBoard>)>,
     mut piece_query: Query<(&mut Transform, &mut Sprite, &Piece), (With<Piece>, Without<ChessBoard>, Without<Square>)>,
 ) {
-    let window = windows.single();
-    let min_dimension = window.width().min(window.height());
     let board_size = 8.0 * SQUARE_SIZE;
     
     // Update board
@@ -355,9 +354,13 @@ fn handle_input(
         if let Some(position) = get_board_position(window.cursor_position(), window) {
             // If a piece is already selected
             if let Ok(selected_entity) = selected_pieces.get_single() {
-                if let Some((_, selected_piece, _)) = pieces.iter().find(|(entity, _, _)| *entity == selected_entity) {
+                let selected_piece = pieces.iter().find(|(entity, piece, _)| {
+                    *entity == selected_entity
+                }).map(|(_, piece, _)| *piece);
+
+                if let Some(piece) = selected_piece {
                     // Try to make a move
-                    let valid_moves = game_state.board.get_valid_moves(selected_piece.position);
+                    let valid_moves = game_state.board.get_valid_moves(piece.position);
                     if let Some(valid_move) = valid_moves.iter().find(|m| m.to == position) {
                         // First check if there's a piece to capture at the destination
                         let captured_entity = pieces.iter()
@@ -371,15 +374,12 @@ fn handle_input(
                             }
 
                             // Move the piece
-                            if let Some((entity, mut piece, mut transform)) = pieces.iter_mut().find(|(e, _, _)| *e == selected_entity) {
+                            if let Some((entity, mut piece, _transform)) = pieces.iter_mut().find(|(e, _, _)| *e == selected_entity) {
                                 move_piece(
                                     &mut commands,
                                     entity,
                                     &mut piece,
-                                    &mut transform,
-                                    valid_move.from,
                                     valid_move.to,
-                                    window,
                                 );
                             }
 
@@ -394,7 +394,7 @@ fn handle_input(
                 }
 
                 // If clicked on another friendly piece, select it instead
-                if let Some((entity, piece, _)) = pieces.iter().find(|(_, p, _)| {
+                if let Some((entity, _piece, _)) = pieces.iter().find(|(_, p, _)| {
                     p.position == position && p.is_white
                 }) {
                     commands.entity(selected_entity).remove::<SelectedPiece>();
@@ -406,7 +406,7 @@ fn handle_input(
                 commands.entity(selected_entity).remove::<SelectedPiece>();
             } else {
                 // No piece selected - try to select a friendly piece
-                if let Some((entity, piece, _)) = pieces.iter().find(|(_, p, _)| {
+                if let Some((entity, _piece, _)) = pieces.iter().find(|(_, p, _)| {
                     p.position == position && p.is_white
                 }) {
                     commands.entity(entity).insert(SelectedPiece);
@@ -434,7 +434,6 @@ fn update_ai(
     time: Res<Time>,
     mut turn_state: ResMut<NextState<Turn>>,
     mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
-    windows: Query<&Window>,
     turn: Res<State<Turn>>,
 ) {
     // Only process during AI's turn
@@ -482,7 +481,7 @@ fn update_ai(
 
                     // Find and move the AI piece
                     let mut moved = false;
-                    for (entity, mut piece, mut transform) in pieces.iter_mut() {
+                    for (entity, mut piece, transform) in pieces.iter_mut() {
                         if piece.position == chess_move.from && !piece.is_white {
                             println!("Moving piece from {:?} to {:?}", chess_move.from, chess_move.to);
                             
@@ -520,7 +519,7 @@ fn update_ai(
     }
 }
 
-fn spawn_ui(mut commands: Commands) {
+fn spawn_ui(commands: &mut Commands) {
     // Main UI container
     commands.spawn(NodeBundle {
         style: Style {
@@ -654,7 +653,7 @@ fn update_ui_text(
 fn show_valid_moves(
     mut commands: Commands,
     game_state: Res<GameState>,
-    selected_pieces: Query<(&Piece, &Transform), With<SelectedPiece>>,
+    selected_pieces: Query<&Piece, With<SelectedPiece>>,
     chess_assets: Res<ChessAssets>,
     indicators: Query<Entity, With<ValidMoveIndicator>>,
 ) {
@@ -664,11 +663,11 @@ fn show_valid_moves(
     }
 
     // Show valid moves for selected piece
-    if let Ok((piece, transform)) = selected_pieces.get_single() {
+    if let Ok(piece) = selected_pieces.get_single() {
         if piece.is_white {  // Only show moves for white pieces during player's turn
             let valid_moves = game_state.board.get_valid_moves(piece.position);
             for valid_move in valid_moves {
-                let target_pos = board_position_to_world(valid_move.to, transform.translation.z);
+                let target_pos = board_position_to_world(valid_move.to, 2.0);
                 commands.spawn((
                     SpriteBundle {
                         texture: chess_assets.valid_move.clone(),
@@ -751,10 +750,7 @@ fn move_piece(
     commands: &mut Commands,
     piece_entity: Entity,
     piece: &mut Piece,
-    transform: &mut Transform,
-    from: Position,
     to: Position,
-    window: &Window,
 ) {
     // Update the piece's position immediately
     piece.position = to;
@@ -800,7 +796,7 @@ fn handle_new_game_button(
     >,
     mut game_state: ResMut<GameState>,
     mut turn_state: ResMut<NextState<Turn>>,
-    mut pieces: Query<Entity, With<Piece>>,
+    pieces: Query<Entity, With<Piece>>,
     mut commands: Commands,
     chess_assets: Res<ChessAssets>,
 ) {
@@ -813,7 +809,7 @@ fn handle_new_game_button(
                 game_state.ai_task = None;
                 
                 // Remove all pieces
-                for entity in pieces.iter_mut() {
+                for entity in pieces.iter() {
                     commands.entity(entity).despawn();
                 }
                 
