@@ -8,26 +8,42 @@ const ROOK_VALUE: i32 = 500;
 const QUEEN_VALUE: i32 = 900;
 const KING_VALUE: i32 = 20000;
 
-// Evaluation constants (strengthened)
-const DOUBLED_PAWN_PENALTY: i32 = -30;
-const CONNECTED_PAWN_BONUS: i32 = 25;
-const KING_PROTECTION_BONUS: i32 = 40;
+// Center control bonuses
+const CENTER_SQUARES_BONUS: i32 = 30;  // d4, d5, e4, e5
+const EXTENDED_CENTER_BONUS: i32 = 15; // c3-f3, c6-f6
+const CENTRAL_PAWN_BONUS: i32 = 25;   // Pawns in or near the center
+const CENTER_CONTROL_BONUS: i32 = 20;  // Pieces controlling center squares
 
-// Additional evaluation constants (strengthened)
+// Development and piece activity
+const DEVELOPMENT_BONUS: i32 = 20;     // Bonus for developed pieces
+const UNDEVELOPED_MINOR_PENALTY: i32 = -30; // Penalty for knights/bishops not moved
+const EARLY_QUEEN_PENALTY: i32 = -25;  // Penalty for moving queen too early
+
+// Pawn structure
+const DOUBLED_PAWN_PENALTY: i32 = -30;
+const ISOLATED_PAWN_PENALTY: i32 = -25;
+const BACKWARD_PAWN_PENALTY: i32 = -20;
+const CONNECTED_PAWN_BONUS: i32 = 25;
+const PAWN_CHAIN_BONUS: i32 = 15;     // Adjacent pawns protecting each other
+const PASSED_PAWN_BONUS: [i32; 8] = [0, 20, 40, 80, 120, 180, 240, 300];
+const PAWN_STORM_BONUS: i32 = 20;     // Bonus for pawns advancing toward enemy king
+
+// Piece coordination
 const BISHOP_PAIR_BONUS: i32 = 50;
+const KNIGHT_OUTPOST_BONUS: i32 = 45;
 const ROOK_ON_OPEN_FILE_BONUS: i32 = 35;
 const ROOK_ON_SEMI_OPEN_FILE_BONUS: i32 = 25;
-const KNIGHT_OUTPOST_BONUS: i32 = 45;
-const PAWN_SHIELD_BONUS: i32 = 30;
-const PAWN_STORM_BONUS: i32 = 20;
-const BACKWARD_PAWN_PENALTY: i32 = -25;
-const ISOLATED_PAWN_PENALTY: i32 = -25;
-// Increased passed pawn bonuses significantly
-const PASSED_PAWN_BONUS: [i32; 8] = [0, 20, 40, 60, 100, 150, 200, 250]; // Indexed by rank
+const ROOK_ON_SEVENTH_BONUS: i32 = 40;
+const CONNECTED_ROOKS_BONUS: i32 = 30;
 
-// Mobility bonuses (new)
+// King safety
+const KING_PROTECTION_BONUS: i32 = 40;
+const PAWN_SHIELD_BONUS: i32 = 30;
+const KING_TROPISM_PENALTY: i32 = -10; // Penalty for enemy pieces near king
+
+// Mobility bonuses for each piece type
 const MOBILITY_BONUS: [i32; 6] = [
-    0,   // King
+    0,   // King (limited mobility is good)
     4,   // Pawn
     8,   // Knight
     7,   // Bishop
@@ -35,111 +51,101 @@ const MOBILITY_BONUS: [i32; 6] = [
     3,   // Queen
 ];
 
-// Center control bonuses (new)
-const CENTER_CONTROL_BONUS: i32 = 20;
-const EXTENDED_CENTER_BONUS: i32 = 10;
-
-// Development bonus (new)
-const DEVELOPMENT_BONUS: i32 = 15;
-
 // Piece-square tables for middlegame
 const PAWN_TABLE: [[i32; 8]; 8] = [
-    [  0,  0,  0,  0,  0,  0,  0,  0],
-    [ 50, 50, 50, 50, 50, 50, 50, 50],
-    [ 10, 10, 20, 30, 30, 20, 10, 10],
-    [  5,  5, 10, 25, 25, 10,  5,  5],
-    [  0,  0,  0, 20, 20,  0,  0,  0],
-    [  5, -5,-10,  0,  0,-10, -5,  5],
-    [  5, 10, 10,-20,-20, 10, 10,  5],
-    [  0,  0,  0,  0,  0,  0,  0,  0]
+    [  0,   0,   0,   0,   0,   0,   0,   0],
+    [ 50,  50,  50,  50,  50,  50,  50,  50],
+    [ 10,  10,  20,  30,  30,  20,  10,  10],
+    [  5,   5,  10,  27,  27,  10,   5,   5],
+    [  0,   0,   0,  25,  25,   0,   0,   0],
+    [  5,  -5, -10,   0,   0, -10,  -5,   5],
+    [  5,  10,  10, -20, -20,  10,  10,   5],
+    [  0,   0,   0,   0,   0,   0,   0,   0]
 ];
 
 const KNIGHT_TABLE: [[i32; 8]; 8] = [
-    [-50,-40,-30,-30,-30,-30,-40,-50],
-    [-40,-20,  0,  0,  0,  0,-20,-40],
-    [-30,  0, 10, 15, 15, 10,  0,-30],
-    [-30,  5, 15, 20, 20, 15,  5,-30],
-    [-30,  0, 15, 20, 20, 15,  0,-30],
-    [-30,  5, 10, 15, 15, 10,  5,-30],
-    [-40,-20,  0,  5,  5,  0,-20,-40],
-    [-50,-40,-30,-30,-30,-30,-40,-50]
+    [-50, -40, -30, -30, -30, -30, -40, -50],
+    [-40, -20,   0,   5,   5,   0, -20, -40],
+    [-30,   5,  15,  20,  20,  15,   5, -30],
+    [-30,   0,  15,  20,  20,  15,   0, -30],
+    [-30,   5,  15,  20,  20,  15,   5, -30],
+    [-30,   0,  10,  15,  15,  10,   0, -30],
+    [-40, -20,   0,   0,   0,   0, -20, -40],
+    [-50, -40, -30, -30, -30, -30, -40, -50]
 ];
 
 const BISHOP_TABLE: [[i32; 8]; 8] = [
-    [-20,-10,-10,-10,-10,-10,-10,-20],
-    [-10,  0,  0,  0,  0,  0,  0,-10],
-    [-10,  0,  5, 10, 10,  5,  0,-10],
-    [-10,  5,  5, 10, 10,  5,  5,-10],
-    [-10,  0, 10, 10, 10, 10,  0,-10],
-    [-10, 10, 10, 10, 10, 10, 10,-10],
-    [-10,  5,  0,  0,  0,  0,  5,-10],
-    [-20,-10,-10,-10,-10,-10,-10,-20]
+    [-20, -10, -10, -10, -10, -10, -10, -20],
+    [-10,   5,   0,   0,   0,   0,   5, -10],
+    [-10,  10,  10,  10,  10,  10,  10, -10],
+    [-10,   0,  10,  10,  10,  10,   0, -10],
+    [-10,   5,   5,  10,  10,   5,   5, -10],
+    [-10,   0,   5,  10,  10,   5,   0, -10],
+    [-10,   0,   0,   0,   0,   0,   0, -10],
+    [-20, -10, -10, -10, -10, -10, -10, -20]
 ];
 
 const ROOK_TABLE: [[i32; 8]; 8] = [
-    [  0,  0,  0,  0,  0,  0,  0,  0],
-    [  5, 10, 10, 10, 10, 10, 10,  5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [  0,  0,  0,  5,  5,  0,  0,  0]
+    [  0,   0,   0,   5,   5,   0,   0,   0],
+    [ -5,   0,   0,   0,   0,   0,   0,  -5],
+    [ -5,   0,   0,   0,   0,   0,   0,  -5],
+    [ -5,   0,   0,   0,   0,   0,   0,  -5],
+    [ -5,   0,   0,   0,   0,   0,   0,  -5],
+    [ -5,   0,   0,   0,   0,   0,   0,  -5],
+    [  5,  10,  10,  10,  10,  10,  10,   5],
+    [  0,   0,   0,   0,   0,   0,   0,   0]
 ];
 
 const QUEEN_TABLE: [[i32; 8]; 8] = [
-    [-20,-10,-10, -5, -5,-10,-10,-20],
-    [-10,  0,  0,  0,  0,  0,  0,-10],
-    [-10,  0,  5,  5,  5,  5,  0,-10],
-    [ -5,  0,  5,  5,  5,  5,  0, -5],
-    [  0,  0,  5,  5,  5,  5,  0, -5],
-    [-10,  5,  5,  5,  5,  5,  0,-10],
-    [-10,  0,  5,  0,  0,  0,  0,-10],
-    [-20,-10,-10, -5, -5,-10,-10,-20]
+    [-20, -10, -10,  -5,  -5, -10, -10, -20],
+    [-10,   0,   5,   0,   0,   0,   0, -10],
+    [-10,   5,   5,   5,   5,   5,   0, -10],
+    [  0,   0,   5,   5,   5,   5,   0,  -5],
+    [ -5,   0,   5,   5,   5,   5,   0,  -5],
+    [-10,   0,   5,   5,   5,   5,   0, -10],
+    [-10,   0,   0,   0,   0,   0,   0, -10],
+    [-20, -10, -10,  -5,  -5, -10, -10, -20]
 ];
 
 const KING_MIDDLEGAME_TABLE: [[i32; 8]; 8] = [
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-20,-30,-30,-40,-40,-30,-30,-20],
-    [-10,-20,-20,-20,-20,-20,-20,-10],
-    [ 20, 20,  0,  0,  0,  0, 20, 20],
-    [ 20, 30, 10,  0,  0, 10, 30, 20]
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-30, -40, -40, -50, -50, -40, -40, -30],
+    [-20, -30, -30, -40, -40, -30, -30, -20],
+    [-10, -20, -20, -20, -20, -20, -20, -10],
+    [ 20,  20,   0,   0,   0,   0,  20,  20],
+    [ 20,  30,  10,   0,   0,  10,  30,  20]
 ];
 
 const KING_ENDGAME_TABLE: [[i32; 8]; 8] = [
-    [-50,-40,-30,-20,-20,-30,-40,-50],
-    [-30,-20,-10,  0,  0,-10,-20,-30],
-    [-30,-10, 20, 30, 30, 20,-10,-30],
-    [-30,-10, 30, 40, 40, 30,-10,-30],
-    [-30,-10, 30, 40, 40, 30,-10,-30],
-    [-30,-10, 20, 30, 30, 20,-10,-30],
-    [-30,-30,  0,  0,  0,  0,-30,-30],
-    [-50,-30,-30,-30,-30,-30,-30,-50]
+    [-50, -40, -30, -20, -20, -30, -40, -50],
+    [-30, -20, -10,   0,   0, -10, -20, -30],
+    [-30, -10,  20,  30,  30,  20, -10, -30],
+    [-30, -10,  30,  40,  40,  30, -10, -30],
+    [-30, -10,  30,  40,  40,  30, -10, -30],
+    [-30, -10,  20,  30,  30,  20, -10, -30],
+    [-30, -30,   0,   0,   0,   0, -30, -30],
+    [-50, -30, -30, -30, -30, -30, -30, -50]
 ];
 
+// Function to evaluate a position
 pub fn evaluate_position(board: &Board) -> i32 {
     let mut score = 0;
     let is_endgame = is_endgame_phase(board);
-    let mut center_control = [0, 0]; // White, Black control of center
-    let mut developed_pieces = [0, 0]; // White, Black developed pieces
-
     let mut white_bishops = 0;
     let mut black_bishops = 0;
-    let mut pawn_files = [[false; 8]; 2]; // Track pawn files for both colors
+    let mut development_score = 0;
+    let mut center_control_score = 0;
 
-    // Material and positional evaluation
+    // Evaluate each piece
     for rank in 1..=8 {
         for file in 1..=8 {
             let pos = Position { rank, file };
             if let Some(piece) = board.get_piece(pos) {
                 let piece_value = get_piece_value(piece.piece_type);
                 let position_bonus = get_position_bonus(piece.piece_type, pos, piece.color == Color::White, is_endgame);
-                let multiplier = if piece.color == Color::White { 1 } else { -1 };
-                
-                score += multiplier * (piece_value + position_bonus);
+                let mut piece_score = piece_value + position_bonus;
 
                 // Count bishops for bishop pair bonus
                 if piece.piece_type == PieceType::Bishop {
@@ -150,76 +156,52 @@ pub fn evaluate_position(board: &Board) -> i32 {
                     }
                 }
 
-                // Track pawn files and evaluate center control
-                match piece.piece_type {
-                    PieceType::Pawn => {
-                        pawn_files[if piece.color == Color::White { 0 } else { 1 }][file as usize - 1] = true;
-                        // Evaluate center control for pawns
-                        if (3..=6).contains(&rank) && (3..=6).contains(&file) {
-                            if piece.color == Color::White {
-                                center_control[0] += 1;
-                            } else {
-                                center_control[1] += 1;
-                            }
-                        }
-                    }
-                    PieceType::Knight | PieceType::Bishop => {
-                        // Count developed pieces
-                        if (piece.color == Color::White && rank > 2) || 
-                           (piece.color == Color::Black && rank < 7) {
-                            if piece.color == Color::White {
-                                developed_pieces[0] += 1;
-                            } else {
-                                developed_pieces[1] += 1;
-                            }
-                        }
-                        // Evaluate center control
-                        let moves = board.get_valid_moves(pos);
-                        for mv in moves {
-                            if (3..=6).contains(&mv.to.rank) && (3..=6).contains(&mv.to.file) {
-                                if piece.color == Color::White {
-                                    center_control[0] += 1;
-                                } else {
-                                    center_control[1] += 1;
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
+                // Development evaluation
+                if !is_endgame {
+                    piece_score += evaluate_development(board, pos, piece);
                 }
 
-                // Evaluate piece-specific features
+                // Center control evaluation
+                center_control_score += evaluate_center_control(pos, piece);
+
+                // Piece-specific evaluations
                 match piece.piece_type {
                     PieceType::Pawn => {
-                        score += multiplier * evaluate_pawn_structure(board, pos, piece.color == Color::White);
-                        score += multiplier * evaluate_passed_pawn(board, pos, piece.color == Color::White);
+                        piece_score += evaluate_pawn_structure(board, pos, piece.color == Color::White);
+                        piece_score += evaluate_passed_pawn(board, pos, piece.color == Color::White);
                     }
                     PieceType::Knight => {
-                        score += multiplier * evaluate_knight(board, pos, piece.color == Color::White);
+                        piece_score += evaluate_knight(board, pos, piece.color == Color::White);
                     }
                     PieceType::Bishop => {
-                        score += multiplier * evaluate_bishop(board, pos, piece.color == Color::White);
+                        piece_score += evaluate_bishop(board, pos, piece.color == Color::White);
                     }
                     PieceType::Rook => {
-                        score += multiplier * evaluate_rook(board, pos, piece.color == Color::White);
+                        piece_score += evaluate_rook(board, pos, piece.color == Color::White);
                     }
                     PieceType::King => {
                         if !is_endgame {
-                            score += multiplier * evaluate_king_safety(board, pos, piece.color == Color::White);
-                            score += multiplier * evaluate_pawn_shield(board, pos, piece.color == Color::White);
+                            piece_score += evaluate_king_safety(board, pos, piece.color == Color::White);
                         }
                     }
                     _ => {}
                 }
 
                 // Add mobility bonus
-                let moves = board.get_valid_moves(pos);
-                score += multiplier * (moves.len() as i32 * MOBILITY_BONUS[piece.piece_type as usize]);
+                piece_score += get_mobility_bonus(piece.piece_type) * 
+                    board.get_valid_moves(pos).len() as i32;
+
+                // Apply color multiplier
+                if piece.color == Color::White {
+                    score += piece_score;
+                } else {
+                    score -= piece_score;
+                }
             }
         }
     }
 
-    // Bishop pair bonus
+    // Add bishop pair bonus
     if white_bishops >= 2 {
         score += BISHOP_PAIR_BONUS;
     }
@@ -227,20 +209,73 @@ pub fn evaluate_position(board: &Board) -> i32 {
         score -= BISHOP_PAIR_BONUS;
     }
 
-    // Add center control bonus
-    score += (center_control[0] - center_control[1]) * CENTER_CONTROL_BONUS;
+    // Add development and center control scores
+    score += development_score;
+    score += center_control_score;
 
-    // Add development bonus in opening/middlegame
-    if !is_endgame {
-        score += (developed_pieces[0] - developed_pieces[1]) * DEVELOPMENT_BONUS;
-    }
-
-    // Adjust score based on game phase
+    // Adjust score for endgame
     if is_endgame {
         score = adjust_endgame_score(board, score);
     }
 
+    // Return score from white's perspective
+    if board.current_turn() == Color::White {
+        score
+    } else {
+        -score
+    }
+}
+
+// Evaluate piece development
+fn evaluate_development(board: &Board, pos: Position, piece: &chess_core::Piece) -> i32 {
+    let mut score = 0;
+    let is_white = piece.color == Color::White;
+    let home_rank = if is_white { 1 } else { 8 };
+
+    match piece.piece_type {
+        PieceType::Knight | PieceType::Bishop => {
+            if pos.rank == home_rank {
+                score += UNDEVELOPED_MINOR_PENALTY;
+            } else {
+                score += DEVELOPMENT_BONUS;
+            }
+        }
+        PieceType::Queen => {
+            // Penalize early queen development
+            let move_count = board.get_valid_moves(pos).len();
+            if move_count < 10 && pos.rank != home_rank {
+                score += EARLY_QUEEN_PENALTY;
+            }
+        }
+        _ => {}
+    }
     score
+}
+
+// Evaluate center control
+fn evaluate_center_control(pos: Position, piece: &chess_core::Piece) -> i32 {
+    let mut score = 0;
+    let is_white = piece.color == Color::White;
+    
+    // Center squares (d4, d5, e4, e5)
+    if (pos.file == 4 || pos.file == 5) && (pos.rank == 4 || pos.rank == 5) {
+        score += CENTER_SQUARES_BONUS;
+    }
+    // Extended center
+    else if (pos.file >= 3 && pos.file <= 6) && (pos.rank >= 3 && pos.rank <= 6) {
+        score += EXTENDED_CENTER_BONUS;
+    }
+
+    // Extra bonus for pawns near center
+    if piece.piece_type == PieceType::Pawn {
+        if (pos.file == 3 || pos.file == 4 || pos.file == 5 || pos.file == 6) &&
+           ((is_white && pos.rank >= 4 && pos.rank <= 6) || 
+            (!is_white && pos.rank >= 3 && pos.rank <= 5)) {
+            score += CENTRAL_PAWN_BONUS;
+        }
+    }
+
+    if is_white { score } else { -score }
 }
 
 fn get_mobility_bonus(piece_type: PieceType) -> i32 {

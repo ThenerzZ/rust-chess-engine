@@ -56,6 +56,7 @@ const BETA_INIT: i32 = 19000;                     // Initial beta for search win
 const QUIESCENCE_DEPTH: u8 = 4;                   // How deep to search captures
 const MAX_MOVES_TO_CONSIDER: usize = 35;          // Limit number of moves to analyze
 const MAX_TT_SIZE: usize = 1_000_000;            // Size of transposition table
+const WINDOW_SIZE_INIT: i32 = 50;                 // Initial aspiration window size
 
 // Pruning parameters to make search more efficient
 const FUTILITY_MARGIN: [i32; 4] = [0, 100, 200, 300];  // Margins for futility pruning at different depths
@@ -122,124 +123,112 @@ fn create_default_move() -> Move {
 
 // Main function that finds the best move in a given position
 pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<u32>) -> Option<Move> {
-    // Set up time management and initialize search
-    let time_manager = TimeManager::new(total_time, moves_left);
+    println!("\nStarting new search with time limit: {:?}", total_time);
+    let start_time = Instant::now();
+    
     SEARCH_TERMINATED.store(false, Ordering::SeqCst);
-
-    // Clean up transposition table if it's getting too big
+    let time_manager = TimeManager::new(total_time, moves_left);
+    
+    // Clear transposition table if it's getting too large
     let mut tt = TRANSPOSITION_TABLE.lock().unwrap();
-    if tt.len() > MAX_TT_SIZE {
+    let tt_size = tt.len();
+    if tt_size > MAX_TT_SIZE {
+        println!("Clearing transposition table (size: {})", tt_size);
         tt.clear();
     }
-    let mut history = HISTORY_TABLE.lock().unwrap();
-    let mut pv_table = PV_TABLE.lock().unwrap();
     
-    // Reset principal variation and prepare for new search
-    pv_table.clear();
-    let mut best_move = None;
-    let mut best_score = ALPHA_INIT;
-    let mut current_depth = 1;
-
-    // Get all possible moves, ordered by likely quality
-    let moves = generate_ordered_moves(
-        board, 
-        &*history,
-        &*pv_table,
-        None  // No TT move for initial position
-    );
-
-    // Quick wins - if there's only one move or an obviously good capture
-    if moves.len() == 1 {
-        return Some(moves[0]);
-    }
-    if let Some(obvious_move) = find_obvious_move(board, &moves) {
-        if is_clearly_winning_capture(board, obvious_move) {
-            return Some(obvious_move);
-        }
-    }
-
-    // Main iterative deepening loop - search deeper and deeper until we run out of time
-    while current_depth <= MAX_DEPTH && (current_depth <= MIN_DEPTH || time_manager.should_continue()) {
-        println!("Starting search at depth {}", current_depth);
-        
-        // Set up aspiration windows - assume the score won't change too much from last iteration
-        let alpha = if current_depth == 1 { -MATE_SCORE } else { best_score - 75 };
-        let beta = if current_depth == 1 { MATE_SCORE } else { best_score + 75 };
-
-        // Split moves among available CPU cores for parallel search
-        let chunk_size = (moves.len() + 3) / 4;
-        let move_chunks: Vec<Vec<Move>> = moves.chunks(chunk_size)
-            .map(|chunk| chunk.to_vec())
-            .collect();
-
-        // Search each chunk of moves in parallel
-        let scores: Vec<(Option<Move>, i32)> = move_chunks.par_iter()
-            .map(|chunk_moves| {
-                let mut local_best_move = None;
-                let mut local_best_score = ALPHA_INIT;
-
-                // Try each move in this chunk
-                for &chess_move in chunk_moves {
-                    // Stop if we're out of time
-                    if !time_manager.should_continue() {
-                        SEARCH_TERMINATED.store(true, Ordering::SeqCst);
-                        break;
-                    }
-
-                    // Make the move and search resulting position
-                    let mut new_board = board.clone();
-                    if new_board.make_move(chess_move).is_ok() {
-                        let score = -principal_variation_search(
-                            &new_board,
-                            current_depth - 1,
-                            -beta,
-                            -alpha,
-                            &mut tt.clone(),
-                            &mut history.clone(),
-                            &mut pv_table.clone(),
-                            true,
-                        );
-
-                        // Update local best if this move is better
-                        if score > local_best_score {
-                            local_best_score = score;
-                            local_best_move = Some(chess_move);
-                        }
-                    }
-                }
-                (local_best_move, local_best_score)
-            })
-            .collect();
-
-        // Stop searching if we ran out of time
-        if SEARCH_TERMINATED.load(Ordering::SeqCst) {
-            break;
-        }
-
-        // Find the best move among all parallel results
-        for (move_option, score) in scores {
-            if score > best_score {
-                best_score = score;
-                best_move = move_option;
+    // Try to find an obvious move first
+    let mut moves = Vec::new();
+    for pos in (1..=8).flat_map(|rank| (1..=8).map(move |file| Position { rank, file })) {
+        if let Some(piece) = board.get_piece(pos) {
+            if piece.color == board.current_turn() {
+                moves.extend(board.get_valid_moves(pos));
             }
         }
-
-        current_depth += 1;
-
-        // Log progress
-        println!("Depth {} completed in {:?}, best move: {:?}, score: {}", 
-            current_depth - 1, 
-            time_manager.elapsed(),
-            best_move,
-            best_score
-        );
-
-        // Stop early if we found a winning move
-        if best_score > MATE_SCORE - 1000 {
+    }
+    println!("Generated {} possible moves", moves.len());
+    
+    if let Some(obvious) = find_obvious_move(board, &moves) {
+        println!("Found obvious move: {:?}", obvious);
+        return Some(obvious);
+    }
+    
+    let mut best_move = None;
+    let mut best_score = ALPHA_INIT;
+    let mut pv_table = Vec::new();
+    let mut history = vec![vec![0; 64]; 64];
+    
+    // Aspiration windows for better move ordering
+    let mut window_size = WINDOW_SIZE_INIT;
+    
+    for depth in 1..=MAX_DEPTH {
+        let elapsed = start_time.elapsed();
+        if !time_manager.should_continue() {
+            println!("Stopping search at depth {} due to time limit ({:?} elapsed)", depth, elapsed);
             break;
         }
+        
+        println!("\nSearching at depth {}", depth);
+        let depth_start = Instant::now();
+        
+        // Calculate alpha and beta with overflow protection
+        let alpha = best_score.saturating_sub(window_size);
+        let beta = best_score.saturating_add(window_size);
+        
+        let mut score = principal_variation_search(
+            board,
+            depth,
+            alpha,
+            beta,
+            &mut tt,
+            &mut history,
+            &mut pv_table,
+            true,
+        );
+        
+        // If score is outside our window, research with full window
+        if score <= alpha || score >= beta {
+            println!("Score {} outside window [{}, {}], researching with full window", score, alpha, beta);
+            score = principal_variation_search(
+                board,
+                depth,
+                -MATE_SCORE,
+                MATE_SCORE,
+                &mut tt,
+                &mut history,
+                &mut pv_table,
+                true,
+            );
+        }
+        
+        let depth_time = depth_start.elapsed();
+        println!("Depth {} completed in {:?}, score: {}", depth, depth_time, score);
+        
+        // Update best move if we found one
+        if !pv_table.is_empty() {
+            best_move = Some(pv_table[0]);
+            best_score = score;
+            println!("New best move: {:?}, score: {}", best_move, best_score);
+        }
+        
+        // Early exit if we found a forced mate
+        if score.abs() > MATE_SCORE - 100 {
+            println!("Found forced mate, stopping search");
+            break;
+        }
+        
+        // Gradually increase window size with overflow protection
+        window_size = window_size.saturating_mul(5).saturating_div(4);
     }
-
+    
+    let total_time = start_time.elapsed();
+    println!("\nSearch completed in {:?}", total_time);
+    if let Some(mv) = best_move {
+        println!("Best move found: {:?} with score {}", mv, best_score);
+    } else {
+        println!("No valid move found!");
+    }
+    
     best_move
 }
 
@@ -280,7 +269,11 @@ fn principal_variation_search(
     }
 
     if depth == 0 || board.is_checkmate() || board.is_stalemate() {
-        return quiescence_search(board, alpha, beta, QUIESCENCE_DEPTH);
+        let score = quiescence_search(board, alpha, beta, QUIESCENCE_DEPTH);
+        if depth == 0 {
+            println!("Reached depth 0, quiescence score: {}", score);
+        }
+        return score;
     }
 
     // Try to use cached result if we have one
@@ -310,40 +303,12 @@ fn principal_variation_search(
         best_move = entry.best_move;
     }
 
-    // Quick position evaluation and pruning checks
-    let static_eval = evaluate_position(board);
-    let in_check = is_endgame_or_in_check(board);
-
-    // Skip searching if the position is already too good
-    if !is_pv_node && !in_check && depth <= 3 {
-        let margin = FUTILITY_MARGIN[depth as usize];
-        if static_eval - margin >= beta {
-            return static_eval;
-        }
-    }
-
-    // Try null move pruning - let opponent make two moves in a row
-    if !is_pv_node && depth >= 3 && !in_check && static_eval >= beta {
-        let r = if depth >= 6 { NULL_MOVE_R + 1 } else { NULL_MOVE_R };
-        let score = -principal_variation_search(
-            board,
-            depth - r - 1,
-            -beta,
-            -beta + 1,
-            tt,
-            history,
-            pv_table,
-            false,
-        );
-        if score >= beta && score < MATE_SCORE - MAX_DEPTH as i32 {
-            return score;
-        }
-    }
-
-    // Get and try all possible moves
+    // Generate and try moves
     let mut moves = generate_ordered_moves(board, history, pv_table, best_move);
     let mut searched_moves = 0;
     let mut has_legal_moves = false;
+
+    println!("Searching {} moves at depth {}", moves.len(), depth);
 
     // Try each move
     for mv in moves {
@@ -406,9 +371,8 @@ fn principal_variation_search(
                 best_move = Some(mv);
                 if score > current_alpha {
                     current_alpha = score;
-                    
-                    // Update principal variation
                     if is_pv_node {
+                        println!("New best move at depth {}: {:?}, score: {}", depth, mv, score);
                         pv_table.clear();
                         pv_table.push(mv);
                     }
@@ -427,7 +391,7 @@ fn principal_variation_search(
 
     // Handle special cases
     if !has_legal_moves {
-        return if in_check { -MATE_SCORE + depth as i32 } else { 0 };
+        return if is_endgame_or_in_check(board) { -MATE_SCORE + depth as i32 } else { 0 };
     }
 
     // Save position to transposition table
@@ -543,63 +507,57 @@ fn generate_ordered_moves(
     tt_move: Option<Move>,
 ) -> Vec<Move> {
     let mut moves = Vec::new();
-    let mut move_scores = Vec::new();
-    
-    let current_color = board.current_turn();
-    
-    // Try the transposition table move first if we have one
-    if let Some(tt_mv) = tt_move {
-        if board.get_piece(tt_mv.from).map_or(false, |p| p.color == current_color) {
-            moves.push(tt_mv);
-            move_scores.push(20000); // Highest priority
-        }
-    }
-
-    // Generate and score all legal moves
-    for rank in 1..=8 {
-        for file in 1..=8 {
-            let pos = Position { rank, file };
-            if let Some(piece) = board.get_piece(pos) {
-                if piece.color == current_color {
-                    for mv in board.get_valid_moves(pos) {
-                        // Skip TT move as it's already added
-                        if tt_move.map_or(false, |tt_mv| tt_mv == mv) {
-                            continue;
-                        }
-
-                        // Score the move based on its type
-                        let score = if let Some(victim) = board.get_piece(mv.to) {
-                            // Captures get high priority
-                            CAPTURE_SCORE_BASE + get_mvv_lva_score(board, mv)
-                        } else if let Some(promotion) = mv.promotion {
-                            // Promotions are also very important
-                            PROMOTION_SCORE_BASE + match promotion {
-                                PieceType::Queen => 500,
-                                PieceType::Rook => 400,
-                                PieceType::Bishop | PieceType::Knight => 300,
-                                _ => 0,
-                            }
-                        } else {
-                            // Use history heuristic for quiet moves
-                            let from_idx = ((mv.from.rank - 1) * 8 + (mv.from.file - 1)) as usize;
-                            let to_idx = ((mv.to.rank - 1) * 8 + (mv.to.file - 1)) as usize;
-                            history[from_idx][to_idx].min(HISTORY_SCORE_MAX)
-                        };
-
-                        moves.push(mv);
-                        move_scores.push(score);
-                    }
-                }
+    for pos in (1..=8).flat_map(|rank| (1..=8).map(move |file| Position { rank, file })) {
+        if let Some(piece) = board.get_piece(pos) {
+            if piece.color == board.current_turn() {
+                moves.extend(board.get_valid_moves(pos));
             }
         }
     }
-
-    // Sort moves by their scores
-    let mut move_indices: Vec<usize> = (0..moves.len()).collect();
-    move_indices.sort_unstable_by_key(|&i| -move_scores[i]);
     
-    // Return moves in sorted order
-    move_indices.into_iter().map(|i| moves[i]).collect()
+    if moves.is_empty() {
+        return moves;
+    }
+    
+    // Score moves
+    let mut scored_moves: Vec<(Move, i32)> = moves.into_iter()
+        .map(|mv| {
+            let mut score = 0;
+            
+            // PV move gets highest priority
+            if !pv_table.is_empty() && pv_table[0] == mv {
+                score += 20000;
+            }
+            
+            // TT move gets high priority
+            if let Some(tt_mv) = tt_move {
+                if tt_mv == mv {
+                    score += 19000;
+                }
+            }
+            
+            // Captures and promotions
+            if mv.move_type == MoveType::Capture {
+                score += get_mvv_lva_score(board, mv);
+                if is_clearly_winning_capture(board, mv) {
+                    score += 1000;
+                }
+            }
+            
+            if let Some(promotion) = mv.promotion {
+                score += PROMOTION_SCORE_BASE;
+            }
+            
+            // History heuristic
+            score += get_history_score(history, mv);
+            
+            (mv, score)
+        })
+        .collect();
+    
+    // Sort moves by score
+    scored_moves.sort_by_key(|(_, score)| -score);
+    scored_moves.into_iter().map(|(mv, _)| mv).collect()
 }
 
 // Finds all possible captures in the current position

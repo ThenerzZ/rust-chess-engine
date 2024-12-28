@@ -22,11 +22,12 @@ enum Turn {
 }
 
 #[derive(Resource)]
-struct GameState {
-    board: Board,
-    ai: ChessAI,
-    ai_thinking_timer: Timer,
-    ai_task: Option<Task<Option<Move>>>,
+pub struct GameState {
+    pub board: Board,
+    pub selected_square: Option<Position>,
+    pub valid_moves: Vec<Move>,
+    pub ai: ChessAI,
+    pub ai_thinking: bool,
 }
 
 impl Default for GameState {
@@ -34,8 +35,9 @@ impl Default for GameState {
         Self {
             board: Board::new(),
             ai: ChessAI::new(4),
-            ai_thinking_timer: Timer::from_seconds(0.5, TimerMode::Once),
-            ai_task: None,
+            ai_thinking: false,
+            selected_square: None,
+            valid_moves: Vec::new(),
         }
     }
 }
@@ -429,11 +431,10 @@ fn update_selected_pieces(
 }
 
 fn update_ai(
-    mut commands: Commands,
     mut game_state: ResMut<GameState>,
-    time: Res<Time>,
-    mut turn_state: ResMut<NextState<Turn>>,
+    mut commands: Commands,
     mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
+    mut turn_state: ResMut<NextState<Turn>>,
     turn: Res<State<Turn>>,
 ) {
     // Only process during AI's turn
@@ -441,82 +442,47 @@ fn update_ai(
         return;
     }
 
-    // Don't process if game is over
-    if game_state.board.is_checkmate() || game_state.board.is_stalemate() {
+    // Set thinking state if not already set
+    if !game_state.ai_thinking {
+        game_state.ai_thinking = true;
         return;
     }
 
-    game_state.ai_thinking_timer.tick(time.delta());
-
-    // Start AI computation if not already started
-    if game_state.ai_task.is_none() && game_state.ai_thinking_timer.finished() {
-        let board = game_state.board.clone();
-        let ai = game_state.ai.clone();
-        let thread_pool = AsyncComputeTaskPool::get();
-        
-        game_state.ai_task = Some(thread_pool.spawn(async move {
-            ai.get_move(&board)
-        }));
-    }
-
-    // Process AI move when ready
-    if let Some(mut task) = game_state.ai_task.take() {
-        if let Some(ai_move) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut task)) {
-            if let Some(chess_move) = ai_move {
-                println!("AI attempting move: {:?}", chess_move);
-                
-                // First check if there's a piece to capture at the destination
-                let captured_entity = pieces.iter()
-                    .find(|(_, p, _)| p.position == chess_move.to)
-                    .map(|(e, _, _)| e);
-
-                // Make the move on the board first
-                if game_state.board.make_move(chess_move).is_ok() {
-                    println!("Move successful on board");
+    // Clone the board to avoid borrow issues
+    let board_clone = game_state.board.clone();
+    
+    // Get AI's move
+    if let Some(ai_move) = game_state.ai.get_move(&board_clone) {
+        // Try to make the move
+        if game_state.board.make_move(ai_move).is_ok() {
+            println!("AI attempting move: {:?}", ai_move);
+            println!("Move successful on board");
+            println!("Moving piece from {:?} to {:?}", ai_move.from, ai_move.to);
+            
+            // Find and move the AI piece
+            for (entity, mut piece, transform) in pieces.iter_mut() {
+                if piece.position == ai_move.from {
+                    // Update piece position
+                    piece.position = ai_move.to;
                     
-                    // Remove captured piece if any
-                    if let Some(entity) = captured_entity {
-                        commands.entity(entity).despawn();
-                    }
-
-                    // Find and move the AI piece
-                    let mut moved = false;
-                    for (entity, mut piece, transform) in pieces.iter_mut() {
-                        if piece.position == chess_move.from && !piece.is_white {
-                            println!("Moving piece from {:?} to {:?}", chess_move.from, chess_move.to);
-                            
-                            // Update piece position
-                            piece.position = chess_move.to;
-                            
-                            // Calculate target position in world coordinates
-                            let target_pos = board_position_to_world(chess_move.to, transform.translation.z);
-                            
-                            // Add movement component
-                            commands.entity(entity).insert(MovingPiece {
-                                target_position: target_pos,
-                                speed: 500.0,
-                            });
-                            
-                            moved = true;
-                            break;
-                        }
-                    }
-
-                    if moved {
-                        // Switch back to player's turn
-                        turn_state.set(Turn::Player);
-                    } else {
-                        println!("Error: Could not find AI piece to move");
-                    }
-                } else {
-                    println!("Invalid AI move attempted: {:?}", chess_move);
+                    // Calculate target position in world coordinates
+                    let target_pos = board_position_to_world(ai_move.to, transform.translation.z);
+                    
+                    // Add movement component
+                    commands.entity(entity).insert(MovingPiece {
+                        target_position: target_pos,
+                        speed: 500.0,
+                    });
+                    break;
                 }
             }
-            game_state.ai_thinking_timer.reset();
         } else {
-            game_state.ai_task = Some(task);
+            println!("Invalid AI move attempted: {:?}", ai_move);
         }
     }
+    
+    game_state.ai_thinking = false;
+    turn_state.set(Turn::Player);
 }
 
 fn spawn_ui(commands: &mut Commands) {
@@ -805,8 +771,7 @@ fn handle_new_game_button(
             Interaction::Pressed => {
                 // Reset game state
                 game_state.board = Board::new();
-                game_state.ai_thinking_timer.reset();
-                game_state.ai_task = None;
+                game_state.ai_thinking = false;
                 
                 // Remove all pieces
                 for entity in pieces.iter() {
