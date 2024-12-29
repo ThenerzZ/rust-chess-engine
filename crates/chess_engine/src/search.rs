@@ -53,18 +53,18 @@ impl TimeManager {
 const MATE_SCORE: i32 = 20000;                    // Value representing checkmate
 const ALPHA_INIT: i32 = -19000;                   // Initial alpha for search window
 const BETA_INIT: i32 = 19000;                     // Initial beta for search window
-const QUIESCENCE_DEPTH: u8 = 4;                   // How deep to search captures
-const MAX_MOVES_TO_CONSIDER: usize = 35;          // Limit number of moves to analyze
+const QUIESCENCE_DEPTH: u8 = 6;                   // Increased from 4 to search deeper in tactical positions
+const MAX_MOVES_TO_CONSIDER: usize = 50;          // Increased from 35 to consider more moves
 const MAX_TT_SIZE: usize = 1_000_000;            // Size of transposition table
-const WINDOW_SIZE_INIT: i32 = 50;                 // Initial aspiration window size
+const WINDOW_SIZE_INIT: i32 = 100;               // Increased from 50 to search wider
 
-// Pruning parameters to make search more efficient
-const FUTILITY_MARGIN: [i32; 4] = [0, 100, 200, 300];  // Margins for futility pruning at different depths
-const DELTA_MARGIN: i32 = 150;                         // Margin for delta pruning in quiescence search
-const NULL_MOVE_R: u8 = 3;                            // Reduction for null move pruning
-const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 800;        // Minimum material for null move pruning
-const LMR_DEPTH_THRESHOLD: u8 = 3;                    // Minimum depth for late move reduction
-const LMR_MOVE_THRESHOLD: usize = 3;                  // Number of moves before late move reduction
+// Pruning parameters - reduced to make search more thorough
+const FUTILITY_MARGIN: [i32; 4] = [0, 200, 400, 600];  // Increased margins
+const DELTA_MARGIN: i32 = 300;                         // Increased from 150
+const NULL_MOVE_R: u8 = 2;                            // Reduced from 3 to search more thoroughly
+const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 500;        // Reduced from 800 to be more aggressive
+const LMR_DEPTH_THRESHOLD: u8 = 2;                    // Reduced from 3
+const LMR_MOVE_THRESHOLD: usize = 2;                  // Reduced from 3
 
 // Move generation and history heuristic parameters
 const MAX_TACTICAL_MOVES: usize = 8;                  // Maximum number of tactical moves to consider
