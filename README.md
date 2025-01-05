@@ -1,179 +1,101 @@
-# Rust Chess Engine
+# Chess Engine
 
-A high-performance chess engine written in Rust, featuring advanced search algorithms, sophisticated evaluation, and a modern Bevy-based UI.
+A high-performance chess engine written in Rust, featuring advanced search algorithms and a modern Bevy-based UI.
 
 ## Features
 
 ### Core Engine
-- Principal Variation Search (PVS) with iterative deepening
-- Advanced pruning techniques (null move, futility, late move reduction)
-- Sophisticated evaluation function with multiple components
-- Efficient move generation using bitboards
+- Principal Variation Search (PVS) with alpha-beta pruning
+- Advanced move ordering:
+  - PV moves
+  - MVV-LVA (Most Valuable Victim - Least Valuable Attacker) capture sorting
+  - Killer moves
+  - History heuristic
+- Sophisticated evaluation function:
+  - Material balance
+  - Piece-square tables
+  - Pawn structure evaluation (doubled, isolated, passed pawns)
+  - Bishop pair bonus
+  - Piece mobility
+  - King safety evaluation
 - Transposition table for position caching
-- Multi-threaded search capabilities
+- Smart time management based on position complexity and game phase
+- Support for all standard chess rules including:
+  - En passant captures
+  - Castling with proper validation
+  - Pawn promotion
+  - Fifty-move rule
+  - Threefold repetition
+  - Insufficient material detection
 
 ### User Interface
-- Modern, responsive Bevy-based UI
+- Modern, clean UI built with Bevy
 - Drag-and-drop piece movement
 - Legal move highlighting
-- Move history tracking
 - Game state visualization
-- Time control display
+- Move history display
+- Current evaluation display
 
 ### Game Features
-- All standard chess rules implemented
-- Support for special moves (castling, en passant, promotions)
-- Time controls
-- Move validation
-- Game state persistence
-- PGN export/import
+- Full implementation of FIDE chess rules
+- Support for standard time controls
+- PGN export/import capabilities
+- Draw detection:
+  - Stalemate
+  - Insufficient material
+  - Threefold repetition
+  - Fifty-move rule
 
-## Getting Started
+## Project Structure
+The project is organized into several crates:
+- `chess_core`: Core chess logic and rules
+- `chess_engine`: Search and evaluation implementation
+- `chess_ui`: Bevy-based user interface
+
+## Building and Running
 
 ### Prerequisites
-- Rust 1.70 or higher
+- Rust 1.70 or later
 - Cargo package manager
-- CMake (for building dependencies)
 
-### Installation
-
-1. Clone the repository:
+### Build Instructions
 ```bash
-git clone https://github.com/ThenerzZ/chess-engine.git
+# Clone the repository
+git clone https://github.com/yourusername/chess-engine.git
 cd chess-engine
-```
 
-2. Build the project:
-```bash
+# Build the project
 cargo build --release
-```
 
-3. Run the application:
-```bash
+# Run the chess engine
 cargo run --release
 ```
 
-## Project Structure
+## Technical Details
 
-```
-chess-engine/
-├── crates/
-│   ├── chess_core/      # Core chess logic and rules
-│   ├── chess_engine/    # AI and search implementation
-│   └── chess_ui/        # Bevy-based user interface
-├── docs/                # Documentation
-│   ├── algorithms/      # Search and evaluation algorithms
-│   ├── engine/          # Engine architecture
-│   └── assets/          # Asset documentation
-├── assets/             # Game assets
-└── tests/              # Integration tests
-```
+### Search Algorithm
+- Principal Variation Search with aspiration windows
+- Iterative deepening
+- Quiescence search for tactical stability
+- Move ordering optimizations
+- Transposition table for position caching
 
-## Documentation
+### Evaluation Function
+- Material evaluation with piece-square tables
+- Pawn structure analysis
+- King safety assessment
+- Mobility evaluation
+- Bishop pair bonus
+- Endgame-specific evaluations
 
-Detailed documentation is available in the `/docs` directory:
-
-- [Technical Design Document](docs/TECHNICAL_DESIGN.md)
-- [Search Algorithms](docs/algorithms/README.md)
-- [Evaluation System](docs/evaluation/README.md)
-- [Engine Architecture](docs/engine/README.md)
-
-## Performance
-
-The engine achieves strong playing strength through:
-
-- Efficient move generation using bitboards
-- Advanced search techniques (PVS, null move pruning)
-- Sophisticated evaluation function
-- Multi-threaded search
-- Transposition table caching
-
-Typical performance metrics:
-- 1-2M nodes/second on modern hardware
-- Search depths of 8-12 ply in middlegame
-- Sub-second move generation
-- Memory usage under 1GB
-
-## Development
-
-### Building from Source
-
-1. Clone the repository
-2. Install dependencies:
-```bash
-rustup update
-rustup component add clippy
-rustup component add rustfmt
-```
-
-3. Build the project:
-```bash
-cargo build
-```
-
-### Running Tests
-
-Run the test suite:
-```bash
-cargo test
-```
-
-Run performance benchmarks:
-```bash
-cargo bench
-```
-
-### Code Style
-
-The project follows Rust standard practices:
-- Run `cargo fmt` before committing
-- Ensure `cargo clippy` passes
-- Maintain test coverage
-- Document public APIs
-
-## Contributing
-
-We welcome contributions! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests and formatting
-5. Submit a pull request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+### Performance Optimizations
+- Efficient board representation
+- Smart move generation
+- Position caching
+- Memory-efficient data structures
 
 ## License
+[MIT License](LICENSE)
 
-This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- [Stockfish](https://stockfishchess.org/) - Inspiration for search techniques
-- [Bevy](https://bevyengine.org/) - Game engine framework
-- [Chess Programming Wiki](https://www.chessprogramming.org/) - Invaluable resource
-
-## Contact
-
-- Project Link: [https://github.com/ThenerzZ/chess-engine](https://github.com/ThenerzZ/chess-engine)
-- Documentation: [https://github.com/ThenerzZ/chess-engine](https://github.com/ThenerzZ/chess-engine)
-
-## Roadmap
-
-### Version 1.1
-- [ ] UCI protocol support
-- [ ] Opening book integration
-- [ ] Endgame tablebases
-- [ ] Improved time management
-
-### Version 1.2
-- [ ] Neural network evaluation
-- [ ] NNUE support
-- [ ] Distributed search
-- [ ] Cloud analysis support
-
-### Version 1.3
-- [ ] Chess960 support
-- [ ] Analysis features
-- [ ] Training mode
-- [ ] Position setup
+## Contributing
+Contributions are welcome! Please feel free to submit pull requests.
