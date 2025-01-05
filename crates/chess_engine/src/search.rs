@@ -7,13 +7,83 @@ use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 
-// Time management settings - how long the AI can think about moves
+// Time management settings
 const MIN_TIME_PER_MOVE: Duration = Duration::from_millis(100);  // Don't move too quickly
 const MAX_TIME_PER_MOVE: Duration = Duration::from_secs(15);     // Don't think forever
 const TIME_BUFFER: Duration = Duration::from_millis(50);         // Safety margin for time management
 const MOVES_TO_GO: u32 = 40;                                     // Assume this many moves left in the game
-const MAX_DEPTH: u8 = 15;                                        // Maximum search depth
-const MIN_DEPTH: u8 = 4;                                         // Always search at least this deep
+
+// Search parameters
+const MAX_DEPTH: u8 = 15;                    // Maximum search depth
+const MIN_DEPTH: u8 = 4;                     // Always search at least this deep
+const ASPIRATION_WINDOW: i32 = 50;           // Initial aspiration window size
+const DELTA_MARGIN: i32 = 200;               // Increased from 150 for more tactical awareness
+const NULL_MOVE_R: u8 = 3;                   // Null move reduction
+const LMR_DEPTH_THRESHOLD: u8 = 3;           // Late Move Reduction depth threshold
+const LMR_MOVE_THRESHOLD: usize = 4;         // Number of moves before LMR kicks in
+const FUTILITY_MARGIN: [i32; 4] = [0, 300, 500, 800];  // Increased margins for better tactical play
+const MAX_QUIESCENCE_DEPTH: u8 = 8;          // Deeper quiescence search for tactical positions
+const REDUCTION_LIMIT: u8 = 3;               // Don't reduce moves until this depth
+const FULL_DEPTH_MOVES: usize = 4;           // Search this many moves with full window
+const MAX_TT_SIZE: usize = 1_000_000;        // Size of transposition table
+const WINDOW_SIZE_INIT: i32 = 100;           // Initial window size
+
+// Move ordering scores
+const PV_MOVE_SCORE: i32 = 20000;            // Principal variation move
+const CAPTURE_SCORE_BASE: i32 = 10000;       // Base score for captures
+const KILLER_MOVE_SCORE: i32 = 9000;         // Killer move score
+const COUNTER_MOVE_SCORE: i32 = 8000;        // Counter move score
+const HISTORY_SCORE_MAX: i32 = 8000;         // Maximum history heuristic score
+
+// Types of entries in our transposition table
+#[derive(Clone, Copy)]
+enum EntryType {
+    Exact,      // The stored score is exact
+    LowerBound, // The real score might be higher
+    UpperBound, // The real score might be lower
+}
+
+// Entry in our transposition table - caches results of previous searches
+#[derive(Clone)]
+struct TTEntry {
+    depth: u8,              // How deep we searched
+    score: i32,             // Score we found
+    entry_type: EntryType,  // How reliable this score is
+    best_move: Option<Move>, // Best move found at this position
+}
+
+// Global cache of positions we've already analyzed
+static TRANSPOSITION_TABLE: Lazy<Mutex<HashMap<String, TTEntry>>> = 
+    Lazy::new(|| Mutex::new(HashMap::with_capacity(MAX_TT_SIZE)));
+
+// History tables
+static mut HISTORY_TABLE: Lazy<Mutex<Vec<Vec<i32>>>> = Lazy::new(|| Mutex::new(vec![vec![0; 64]; 64]));
+static mut KILLER_MOVES: Lazy<Mutex<Vec<[Option<Move>; 2]>>> = Lazy::new(|| Mutex::new(vec![[None, None]; MAX_DEPTH as usize]));
+static mut COUNTER_MOVES: Lazy<Mutex<HashMap<MoveKey, Move>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Principal Variation (PV) - the best line of play we've found
+const MAX_PV_LENGTH: usize = 64;  // Maximum length of the principal variation
+static PV_TABLE: Lazy<Mutex<Vec<Move>>> = Lazy::new(|| Mutex::new(Vec::with_capacity(MAX_PV_LENGTH)));
+
+// Move key for hash map
+#[derive(Hash, Eq, PartialEq, Clone, Copy)]
+struct MoveKey {
+    from_rank: u8,
+    from_file: u8,
+    to_rank: u8,
+    to_file: u8,
+}
+
+impl From<Move> for MoveKey {
+    fn from(mv: Move) -> Self {
+        MoveKey {
+            from_rank: mv.from.rank,
+            from_file: mv.from.file,
+            to_rank: mv.to.rank,
+            to_file: mv.to.file,
+        }
+    }
+}
 
 // Flag to stop searching when we run out of time
 static SEARCH_TERMINATED: AtomicBool = AtomicBool::new(false);
@@ -55,61 +125,9 @@ const ALPHA_INIT: i32 = -19000;                   // Initial alpha for search wi
 const BETA_INIT: i32 = 19000;                     // Initial beta for search window
 const QUIESCENCE_DEPTH: u8 = 6;                   // Increased from 4 to search deeper in tactical positions
 const MAX_MOVES_TO_CONSIDER: usize = 50;          // Increased from 35 to consider more moves
-const MAX_TT_SIZE: usize = 1_000_000;            // Size of transposition table
-const WINDOW_SIZE_INIT: i32 = 100;               // Increased from 50 to search wider
-
-// Pruning parameters - reduced to make search more thorough
-const FUTILITY_MARGIN: [i32; 4] = [0, 200, 400, 600];  // Increased margins
-const DELTA_MARGIN: i32 = 300;                         // Increased from 150
-const NULL_MOVE_R: u8 = 2;                            // Reduced from 3 to search more thoroughly
-const NULL_MOVE_MATERIAL_THRESHOLD: i32 = 500;        // Reduced from 800 to be more aggressive
-const LMR_DEPTH_THRESHOLD: u8 = 2;                    // Reduced from 3
-const LMR_MOVE_THRESHOLD: usize = 2;                  // Reduced from 3
 
 // Move generation and history heuristic parameters
-const MAX_TACTICAL_MOVES: usize = 8;                  // Maximum number of tactical moves to consider
-const HISTORY_MAX: i32 = 8000;                       // Maximum history score before scaling
-
-// Move ordering scores - helps search better moves first
-const CAPTURE_SCORE_BASE: i32 = 10000;               // Base score for captures
-const PROMOTION_SCORE_BASE: i32 = 9000;              // Base score for pawn promotions
-const HISTORY_SCORE_MAX: i32 = 6000;                 // Maximum score for history heuristic
-
-// Types of entries in our transposition table
-#[derive(Clone, Copy)]
-enum EntryType {
-    Exact,      // The stored score is exact
-    LowerBound, // The real score might be higher
-    UpperBound, // The real score might be lower
-}
-
-// Entry in our transposition table - caches results of previous searches
-#[derive(Clone)]
-struct TTEntry {
-    depth: u8,              // How deep we searched
-    score: i32,             // Score we found
-    entry_type: EntryType,  // How reliable this score is
-    best_move: Option<Move>, // Best move found at this position
-}
-
-// Global cache of positions we've already analyzed
-static TRANSPOSITION_TABLE: Lazy<Mutex<HashMap<String, TTEntry>>> = 
-    Lazy::new(|| Mutex::new(HashMap::with_capacity(MAX_TT_SIZE)));
-
-// Table that remembers which moves were good in similar positions
-static HISTORY_TABLE: Lazy<Mutex<Vec<Vec<i32>>>> = 
-    Lazy::new(|| Mutex::new(vec![vec![0; 64]; 64]));
-
-// Principal Variation (PV) - the best line of play we've found
-const MAX_PV_LENGTH: usize = 64;  // Maximum length of the principal variation
-static PV_TABLE: Lazy<Mutex<Vec<Move>>> = Lazy::new(|| Mutex::new(Vec::with_capacity(MAX_PV_LENGTH)));
-
-// Killer moves - good moves that caused beta cutoffs at the same depth
-static KILLER_MOVES: Lazy<Mutex<Vec<Option<[Move; 2]>>>> = Lazy::new(|| Mutex::new(vec![None; MAX_PV_LENGTH]));
-
-// Parameters for Principal Variation Search (PVS)
-const FULL_DEPTH_MOVES: usize = 4;  // Search this many moves with full window
-const REDUCTION_LIMIT: u8 = 3;      // Don't reduce moves until this depth
+const MAX_TACTICAL_MOVES: usize = 8;         // Maximum number of tactical moves to consider
 
 // Creates a dummy move for initialization purposes
 fn create_default_move() -> Move {
@@ -184,6 +202,7 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
             &mut history,
             &mut pv_table,
             true,
+            None,
         );
         
         // If score is outside our window, research with full window
@@ -198,6 +217,7 @@ pub fn search_best_move(board: &Board, total_time: Duration, moves_left: Option<
                 &mut history,
                 &mut pv_table,
                 true,
+                None,
             );
         }
         
@@ -262,6 +282,7 @@ fn principal_variation_search(
     history: &mut Vec<Vec<i32>>,
     pv_table: &mut Vec<Move>,
     is_pv_node: bool,
+    prev_move: Option<Move>,
 ) -> i32 {
     // Early exits
     if SEARCH_TERMINATED.load(Ordering::SeqCst) {
@@ -304,7 +325,7 @@ fn principal_variation_search(
     }
 
     // Generate and try moves
-    let mut moves = generate_ordered_moves(board, history, pv_table, best_move);
+    let mut moves = generate_ordered_moves(board, best_move, depth, prev_move);
     let mut searched_moves = 0;
     let mut has_legal_moves = false;
 
@@ -328,6 +349,7 @@ fn principal_variation_search(
                     history,
                     pv_table,
                     is_pv_node,
+                    Some(mv),
                 )
             } else {
                 // Try late move reductions for other moves
@@ -347,6 +369,7 @@ fn principal_variation_search(
                     history,
                     pv_table,
                     false,
+                    Some(mv),
                 );
 
                 // If the shallow search looks promising, do a full search
@@ -360,6 +383,7 @@ fn principal_variation_search(
                         history,
                         pv_table,
                         is_pv_node,
+                        Some(mv),
                     );
                 }
                 score
@@ -502,9 +526,9 @@ fn quiescence_search(board: &Board, mut alpha: i32, beta: i32, depth: u8) -> i32
 // Generates a list of moves sorted by how good they're likely to be
 fn generate_ordered_moves(
     board: &Board,
-    history: &Vec<Vec<i32>>,
-    pv_table: &Vec<Move>,
     tt_move: Option<Move>,
+    depth: u8,
+    prev_move: Option<Move>,
 ) -> Vec<Move> {
     let mut moves = Vec::new();
     for pos in (1..=8).flat_map(|rank| (1..=8).map(move |file| Position { rank, file })) {
@@ -524,32 +548,54 @@ fn generate_ordered_moves(
         .map(|mv| {
             let mut score = 0;
             
-            // PV move gets highest priority
-            if !pv_table.is_empty() && pv_table[0] == mv {
-                score += 20000;
-            }
-            
-            // TT move gets high priority
+            // TT move gets highest priority
             if let Some(tt_mv) = tt_move {
                 if tt_mv == mv {
-                    score += 19000;
+                    score += PV_MOVE_SCORE;
                 }
             }
             
-            // Captures and promotions
-            if mv.move_type == MoveType::Capture {
-                score += get_mvv_lva_score(board, mv);
-                if is_clearly_winning_capture(board, mv) {
-                    score += 1000;
+            // Captures
+            if let Some(victim) = board.get_piece(mv.to) {
+                let attacker = board.get_piece(mv.from).unwrap();
+                score += CAPTURE_SCORE_BASE + mvv_lva_score(victim.piece_type, attacker.piece_type);
+                
+                // SEE (Static Exchange Evaluation) for captures
+                let see_score = static_exchange_evaluation(board, mv);
+                if see_score > 0 {
+                    score += see_score * 100;
                 }
             }
             
-            if let Some(promotion) = mv.promotion {
-                score += PROMOTION_SCORE_BASE;
+            // Killer moves
+            unsafe {
+                let killer_moves = KILLER_MOVES.get_mut().unwrap().get(depth as usize);
+                if let Some(killers) = killer_moves {
+                    if killers[0] == Some(mv) {
+                        score += KILLER_MOVE_SCORE;
+                    } else if killers[1] == Some(mv) {
+                        score += KILLER_MOVE_SCORE - 100;
+                    }
+                }
+            }
+            
+            // Counter moves
+            if let Some(prev) = prev_move {
+                unsafe {
+                    let counter_moves = COUNTER_MOVES.get_mut().unwrap();
+                    if counter_moves.get(&MoveKey::from(prev)) == Some(&mv) {
+                        score += COUNTER_MOVE_SCORE;
+                    }
+                }
             }
             
             // History heuristic
-            score += get_history_score(history, mv);
+            unsafe {
+                let history = HISTORY_TABLE.get_mut().unwrap();
+                let from_idx = ((mv.from.rank - 1) * 8 + (mv.from.file - 1)) as usize;
+                let to_idx = ((mv.to.rank - 1) * 8 + (mv.to.file - 1)) as usize;
+                score += history[from_idx][to_idx].min(HISTORY_SCORE_MAX);
+            }
             
             (mv, score)
         })
@@ -558,6 +604,66 @@ fn generate_ordered_moves(
     // Sort moves by score
     scored_moves.sort_by_key(|(_, score)| -score);
     scored_moves.into_iter().map(|(mv, _)| mv).collect()
+}
+
+fn mvv_lva_score(victim: PieceType, attacker: PieceType) -> i32 {
+    let victim_value = match victim {
+        PieceType::Pawn => 1,
+        PieceType::Knight => 3,
+        PieceType::Bishop => 3,
+        PieceType::Rook => 5,
+        PieceType::Queen => 9,
+        PieceType::King => 0,
+    };
+    
+    let attacker_value = match attacker {
+        PieceType::Pawn => 1,
+        PieceType::Knight => 3,
+        PieceType::Bishop => 3,
+        PieceType::Rook => 5,
+        PieceType::Queen => 9,
+        PieceType::King => 0,
+    };
+    
+    // Most Valuable Victim - Least Valuable Attacker
+    victim_value * 100 - attacker_value * 10
+}
+
+// Updates history tables after a successful move
+fn update_history_tables(mv: Move, depth: u8, prev_move: Option<Move>) {
+    let bonus = depth as i32 * depth as i32;
+    
+    unsafe {
+        // Update history table
+        let mut history = HISTORY_TABLE.get_mut().unwrap();
+        let from_idx = ((mv.from.rank - 1) * 8 + (mv.from.file - 1)) as usize;
+        let to_idx = ((mv.to.rank - 1) * 8 + (mv.to.file - 1)) as usize;
+        history[from_idx][to_idx] += bonus;
+        
+        // Decay history values if they get too large
+        if history[from_idx][to_idx] > HISTORY_SCORE_MAX * 2 {
+            for row in history.iter_mut() {
+                for cell in row.iter_mut() {
+                    *cell /= 2;
+                }
+            }
+        }
+        
+        // Update killer moves
+        let mut killer_moves = KILLER_MOVES.get_mut().unwrap();
+        if let Some(killers) = killer_moves.get_mut(depth as usize) {
+            if killers[0] != Some(mv) {
+                killers[1] = killers[0];
+                killers[0] = Some(mv);
+            }
+        }
+        
+        // Update counter moves using move keys
+        if let Some(prev) = prev_move {
+            let mut counter_moves = COUNTER_MOVES.get_mut().unwrap();
+            counter_moves.insert(MoveKey::from(prev), mv);
+        }
+    }
 }
 
 // Finds all possible captures in the current position
@@ -666,7 +772,7 @@ fn update_history(history: &mut Vec<Vec<i32>>, mv: Move, bonus: u8) {
     history[from_idx][to_idx] += bonus as i32;
     
     // Scale down all history scores if they get too large
-    if history[from_idx][to_idx] > HISTORY_MAX {
+    if history[from_idx][to_idx] > HISTORY_SCORE_MAX {
         for row in history.iter_mut() {
             for cell in row.iter_mut() {
                 *cell /= 2;
