@@ -61,7 +61,7 @@ The project is organized into several crates:
 ### Build Instructions
 ```bash
 # Clone the repository
-git clone https://github.com/ThenerzZ/chess-engine.git
+git clone https://github.com/ThenerzZ/rust-chess-engine.git
 cd chess-engine
 
 # Build the project
