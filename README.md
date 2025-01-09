@@ -155,8 +155,8 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) for deta
 
 ## Contact
 
-- Project Link: [https://github.com/ThenerzZ/chess-engine](https://github.com/ThenerzZ/chess-engine)
-- Documentation: [https://github.com/ThenerzZ/chess-engine](https://github.com/ThenerzZ/chess-engine)
+- Project Link: [https://github.com/ThenerzZ/rust-chess-engine](https://github.com/ThenerzZ/rust-chess-engine)
+- Documentation: [https://github.com/ThenerzZ/rust-chess-engine](https://github.com/ThenerzZ/rust-chess-engine)
 
 ## Roadmap
 
